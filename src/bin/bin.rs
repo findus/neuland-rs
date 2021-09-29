@@ -12,7 +12,9 @@ use std::collections::{HashSet, HashMap};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::fs::{File, OpenOptions};
 use std::hash::Hash;
+use std::io::Read;
 use std::num::ParseIntError;
 use serde_yaml::from_reader;
 use serde::{Serialize, Deserialize};
@@ -23,9 +25,10 @@ use itertools::Itertools;
 use regex::Regex;
 use lazy_static::lazy_static;
 use colored::Colorize;
+use std::io::prelude::*;
 
 lazy_static! {
-    static ref iptables_regex: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) --?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})").unwrap();
+    static ref iptables_regex: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
     static ref route_dev_regex: Regex = Regex::new(r"dev ([^ \n]+)").unwrap();
     static ref route_gateway_regex: Regex = Regex::new(r"via ([^ \n]+)").unwrap();
 }
@@ -36,18 +39,19 @@ struct Homenet {
     input_nic: String
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Eq, Hash)]
 struct Sink {
     name: String,
     ip: String,
     nic: String,
+    udp: bool,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct PortRule {
-    not: bool,
+    not: Option<bool>,
     length: Option<String>,
-    ports: String,
+    ports: Option<String>,
     protocol: String
 }
 
@@ -55,7 +59,8 @@ struct PortRule {
 struct IPRule {
     priority: Vec<String>,
     ips: Vec<String>,
-    name: String
+    name: String,
+    table: Option<String>
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -72,8 +77,8 @@ struct InternalIptablesPortRule {
     nic: String,
     source: String,
     protocol: String,
-    ports: String,
-    not: bool,
+    ports: Option<String>,
+    not: Option<bool>,
     mark: u8
 }
 
@@ -81,7 +86,8 @@ struct InternalIptablesPortRule {
 struct InternalIpRule {
     nic: String,
     ip: String,
-    gateway: Option<String>
+    gateway: Option<String>,
+    table: Option<String>
 }
 
 impl From<ParseIntError> for ParseError {
@@ -104,7 +110,8 @@ impl TryFrom<String> for InternalIpRule {
         Ok(InternalIpRule {
             nic: device,
             ip,
-            gateway: gateway.map(|e| e.to_string())
+            gateway: gateway.map(|e| e.to_string()),
+            table: None
         })
     }
 }
@@ -118,9 +125,9 @@ impl TryFrom<String> for InternalIptablesPortRule {
             nic: capture.get(2).map(|e| e.as_str()).ok_or(ParseError::Error("nic not found".to_string()))?.to_string(),
             protocol: capture.get(3).map(|e| e.as_str()).ok_or(ParseError::Error("protocol not found".to_string()))?.to_string(),
             source: capture.get(1).map(|e| e.as_str()).ok_or(ParseError::Error("source not found".to_string()))?.to_string(),
-            ports: format!("{}",capture.get(5).map(|e| e.as_str()).ok_or(ParseError::Error("ports not found".to_string()))?),
-            not: capture.get(4).map(|e| e.as_str()).ok_or(ParseError::Error("not not found".to_string()))?.to_string().contains("!"),
-            mark:  capture.get(6).map(|e| e.as_str().parse::<u8>()).ok_or(ParseError::Error("mark not found".to_string()))??
+            ports: capture.get(6).map(|e| e.as_str().to_string()),
+            not: capture.get(5).map(|e| e.as_str()).map( |f| f.to_string().contains("!")),
+            mark:  capture.get(8).or_else(|| capture.get(7)).map(|e| e.as_str().parse::<u8>()).ok_or(ParseError::Error("mark not found".to_string()))??
         };
         Ok(d)
     }
@@ -128,11 +135,17 @@ impl TryFrom<String> for InternalIptablesPortRule {
 
 impl From<&InternalIpRule> for String {
     fn from(rule: &InternalIpRule) -> Self {
+        let mut str = format!("{}",rule.ip);
         if rule.gateway.is_some() {
-            format!("{} via {} dev {}", rule.ip, rule.gateway.as_ref().unwrap(), rule.nic)
-        } else {
-            format!("{} dev {}", rule.ip, rule.nic)
+            str.push_str(&format!(" via {}", (&rule).gateway.as_ref().unwrap()));
         }
+        str.push_str(&format!(" dev {}", (&rule).nic));
+
+        if let Some(table) = rule.table.as_ref().map(|e| e.to_string()) {
+            str.push_str(&format!(" table {}", table));
+        }
+
+        str
     }
 }
 
@@ -141,9 +154,12 @@ impl From<&InternalIptablesPortRule> for String {
         let source = iptables_rule.source.to_string();
         let nic = iptables_rule.nic.to_string();
         let protocol = iptables_rule.protocol.to_string();
-        let dports = iptables_rule.ports.clone();
-        let not = if iptables_rule.not { "!" } else { "" };
-        format!("-s {} -i {} -p {} -m multiport {} --dports {} -j MARK --set-mark 1",source, nic, protocol,not, dports)
+        let not = if iptables_rule.not.unwrap_or(false) {" ! "} else { "" };
+        if let Some(dports) = iptables_rule.ports.clone() {
+            format!("-s {} -i {} -p {} -m multiport {} --dports {} -j MARK --set-mark 1",source, nic, protocol,not, dports)
+        } else {
+            format!("-s {} -i {} -p {} -j MARK --set-mark 1",source, nic, protocol)
+        }
     }
 }
 
@@ -187,7 +203,9 @@ impl IPTablesManager<'_> {
     }
 
     fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
-        self.ipt.append_unique("mangle", "PREROUTING", String::from(port_rule).as_str()).unwrap();
+        let command = String::from(port_rule);
+        log::debug!("{}", &command);
+        self.ipt.append_unique("mangle", "PREROUTING", &command).unwrap();
     }
 
     fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
@@ -227,8 +245,8 @@ impl IPTablesManager<'_> {
     }
 
     fn sync(&self, diff: &IpTablesRuleDiff) {
-        diff.added.iter().for_each(|r| self.add_iptables_rule(r));
         diff.deleted.iter().for_each(|r| self.delete_iptables_rule(r));
+        diff.added.iter().for_each(|r| self.add_iptables_rule(r));
     }
 }
 
@@ -255,6 +273,23 @@ impl IpRoute2<'_> {
             .into_group_map_by(|e| e.name.to_string())
     }
 
+    fn setup_udp_routing_table(&self) {
+        let mut file = String::new();
+        File::open("/etc/iproute2/rt_tables").unwrap().read_to_string(&mut file);
+        if file.contains("udp_routing_table") == false {
+            log::info!("UDP Routing table does not exist, gonna create it.");
+            let mut file = OpenOptions::new().write(true).append(true).open("/etc/iproute2/rt_tables").unwrap();
+
+            if let Err(e) = writeln!(file, "201 udp_routing_table") {
+                log::error!("Could not write to file {}", e);
+                panic!();
+            }
+
+            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output().unwrap();
+
+        }
+    }
+
 
     fn get_cmd(&self) -> Command {
         Command::new("ip")
@@ -264,7 +299,14 @@ impl IpRoute2<'_> {
         let sinks = self.get_active_sinks();
 
         self.config.priority_ip.iter().map(|rule| {
-            let first_available_sink = rule.priority.iter().filter(|pr| sinks.contains_key(&*pr.to_string())).nth(0).unwrap();
+
+            let first_available_sink = if rule.name.eq("udp") == false {
+                rule.priority.iter().filter(|pr| sinks.contains_key(&*pr.to_string())).nth(0).unwrap()
+            } else {
+                let e: HashMap<_,_> = sinks.iter().filter(|(_,d)| d.first().unwrap().udp).collect();
+                rule.priority.iter().filter(|pr| e.contains_key(pr)).nth(0).unwrap()
+            };
+
             let sink = sinks.get(first_available_sink).unwrap().first().unwrap();
             log::info!("Sink for {}: {}", rule.name, sink.name);
             rule.ips.iter().map(|r| {
@@ -272,17 +314,21 @@ impl IpRoute2<'_> {
                     nic: (&sink.nic).to_string(),
                     ip: (r).to_string(),
                     gateway: Some((&sink.ip).to_string()),
+                    table: rule.table.clone()
                 }
             }).collect::<HashSet<_>>()
         }).flatten().collect()
     }
 
     fn list_routes(&self) -> HashSet<InternalIpRule> {
-        let stdout = self.get_cmd().arg("route").output().unwrap().stdout;
+        let  stdout = self.get_cmd().arg("route").output().unwrap().stdout;
+        let  stdout_udp = self.get_cmd().args(&["route","show", "table", "udp_routing_table"]).output().unwrap().stdout;
+
         if stdout.len() == 0 {
             return HashSet::new();
         }
-        String::from_utf8_lossy(stdout.as_slice())
+
+        let mut rules: HashSet<_> = String::from_utf8_lossy(stdout.as_slice())
             .trim()
             .split('\n')
             .map(String::from)
@@ -290,8 +336,27 @@ impl IpRoute2<'_> {
             //dont delete nexthop
             .filter(|rule| rule.ip.eq(&self.config.homenet.ip) == false)
             //ignore rules that we dont care about like wireguard rules
-            .filter(|rule| rule.nic.eq(&self.config.homenet.input_nic) == false)
-            .collect()
+            .filter(|rule| rule.nic.eq(&self.config.homenet.input_nic))
+            .collect();
+
+        let udp_rules: HashSet<_> = String::from_utf8_lossy(stdout_udp.as_slice())
+            .trim()
+            .split('\n')
+            .map(String::from)
+            .map(|str| {
+
+                let mut temp = InternalIpRule::try_from(str).unwrap();
+                temp.table = Some("udp_routing_table".to_string());
+                temp
+            })
+            //dont delete nexthop
+            .filter(|rule| rule.ip.eq(&self.config.homenet.ip) == false)
+            //ignore rules that we dont care about like wireguard rules
+            .filter(|rule| rule.nic.eq(&self.config.homenet.input_nic))
+            .collect();
+
+        rules.extend(udp_rules);
+        rules
     }
 
     fn get_route_diff<'a>(&self, rules_from_config: &'a HashSet<InternalIpRule>, existing_rules: &'a HashSet<InternalIpRule>) -> IpRuleDiff<'a> {
@@ -364,6 +429,7 @@ fn main() {
 
     log::info!("Will add {} and delete {} IP Rules .. {} are the same.", a.added.len().to_string().green(), a.deleted.len().to_string().red(), a.same.len().to_string().white());
 
+    iproute2.setup_udp_routing_table();
 
     a.deleted.iter().for_each(|c| {
         iproute2.delete_route(c);
