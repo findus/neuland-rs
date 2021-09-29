@@ -1,5 +1,7 @@
 ---
-homenet: 192.168.178.0/24
+homenet:
+    ip: 192.168.178.0/24
+    input_nic: eth0
 sinks:
   - name: lte
     ip: 192.168.178.48
@@ -9,21 +11,18 @@ sinks:
     nic: eth0
 priority_ports:
   - discord:
+    protocol: udp
     not: false
     length: 0:200
-    ports:
-      - 5000:65535
+    ports: "5000:65535"
   - https_and_vpn:
     not: true
-    ports:
-      - 443
-      - 1301
+    protocol: udp
+    ports: "443,1301"
   - league_chat:
+    protocol: tcp
     not: false
-    ports:
-      - 2099
-      - 5223
-      - 5222
+    ports: "2099,5223,5222"
 priority_ip:
   - league:
     priority:
