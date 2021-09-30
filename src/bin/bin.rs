@@ -13,11 +13,15 @@ use std::num::ParseIntError;
 use serde_yaml::from_reader;
 use serde::{Serialize, Deserialize};
 use std::process::{Command, ExitStatus};
+use std::thread::sleep;
+use std::time::Duration;
 use regex::Regex;
 use lazy_static::lazy_static;
 
 lazy_static! {
     static ref iptables_regex: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) --?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})").unwrap();
+    static ref route_dev_regex: Regex = Regex::new(r"dev ([^ \n]+)").unwrap();
+    static ref route_gateway_regex: Regex = Regex::new(r"via ([^ \n]+)").unwrap();
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -57,7 +61,7 @@ struct Config {
 
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct IptablesPortRule {
+struct InternalIptablesPortRule {
     nic: String,
     source: String,
     protocol: String,
@@ -66,18 +70,44 @@ struct IptablesPortRule {
     mark: u8
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct InternalIpRule {
+    nic: String,
+    ip: String,
+    gateway: Option<String>
+}
+
 impl From<ParseIntError> for ParseError {
     fn from(e: ParseIntError) -> Self {
         ParseError::Error(e.to_string())
     }
 }
 
-impl TryFrom<String> for IptablesPortRule {
+impl TryFrom<String> for InternalIpRule {
+    type Error = ParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let dev_capture = route_dev_regex.captures(&value).ok_or(ParseError::Error("device not found".to_string()))?;
+        let gw_capture = route_gateway_regex.captures(&value);
+
+        let ip = value.split(" ").into_iter().nth(0).unwrap().to_string();
+        let device = dev_capture.get(1).map(|e| e.as_str()).ok_or(ParseError::Error("device not found".to_string()))?.to_string();
+        let gateway =  gw_capture.and_then(|c| c.get(1).map(|e| e.as_str()));
+
+        Ok(InternalIpRule {
+            nic: device,
+            ip,
+            gateway: gateway.map(|e| e.to_string())
+        })
+    }
+}
+
+impl TryFrom<String> for InternalIptablesPortRule {
     type Error = ParseError;
 
     fn try_from(value: String) -> Result<Self, ParseError> {
         let capture = iptables_regex.captures(&value).ok_or(ParseError::Error("capture not found".to_string()))?;
-        let d = IptablesPortRule {
+        let d = InternalIptablesPortRule {
             nic: capture.get(2).map(|e| e.as_str()).ok_or(ParseError::Error("nic not found".to_string()))?.to_string(),
             protocol: capture.get(3).map(|e| e.as_str()).ok_or(ParseError::Error("protocol not found".to_string()))?.to_string(),
             source: capture.get(1).map(|e| e.as_str()).ok_or(ParseError::Error("source not found".to_string()))?.to_string(),
@@ -89,8 +119,18 @@ impl TryFrom<String> for IptablesPortRule {
     }
 }
 
-impl From<&IptablesPortRule> for String {
-    fn from(iptables_rule: &IptablesPortRule) -> Self {
+impl From<&InternalIpRule> for String {
+    fn from(rule: &InternalIpRule) -> Self {
+        if rule.gateway.is_some() {
+            format!("{} via {} dev {}", rule.ip, rule.gateway.as_ref().unwrap(), rule.nic)
+        } else {
+            format!("{} dev {}", rule.ip, rule.nic)
+        }
+    }
+}
+
+impl From<&InternalIptablesPortRule> for String {
+    fn from(iptables_rule: &InternalIptablesPortRule) -> Self {
         let source = iptables_rule.source.to_string();
         let nic = iptables_rule.nic.to_string();
         let protocol = iptables_rule.protocol.to_string();
@@ -100,9 +140,9 @@ impl From<&IptablesPortRule> for String {
     }
 }
 
-impl From<(&PortRule,&Homenet)> for IptablesPortRule {
+impl From<(&PortRule,&Homenet)> for InternalIptablesPortRule {
     fn from((rule,homenet): (&PortRule, &Homenet)) -> Self {
-        IptablesPortRule {
+        InternalIptablesPortRule {
             nic: homenet.input_nic.to_string(),
             mark: 1,
             not: rule.not,
@@ -113,31 +153,31 @@ impl From<(&PortRule,&Homenet)> for IptablesPortRule {
     }
 }
 
-struct Manager<'a> {
+struct IPTablesManager<'a> {
     ipt: iptables::IPTables,
     config: &'a Config,
 }
 
 struct IpTablesRuleDiff<'a> {
-    added: Vec<&'a IptablesPortRule>,
-    deleted: Vec<&'a IptablesPortRule>,
-    same: Vec<&'a IptablesPortRule>
+    added: Vec<&'a InternalIptablesPortRule>,
+    deleted: Vec<&'a InternalIptablesPortRule>,
+    same: Vec<&'a InternalIptablesPortRule>
 }
 
-impl Manager<'_> {
+impl IPTablesManager<'_> {
 
-    fn new(config: &Config) -> Manager {
-        Manager {
+    fn new(config: &Config) -> IPTablesManager {
+        IPTablesManager {
             ipt: iptables::new(false).unwrap(),
             config,
         }
     }
 
-    fn add_iptables_rule(&self, port_rule: &IptablesPortRule) {
+    fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
         self.ipt.append_unique("mangle", "PREROUTING", String::from(port_rule).as_str()).unwrap();
     }
 
-    fn delete_iptables_rule(&self, port_rule: &IptablesPortRule) {
+    fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
         self.ipt.delete("mangle", "PREROUTING", String::from(port_rule).as_str()).unwrap();
     }
 
@@ -145,22 +185,23 @@ impl Manager<'_> {
         self.ipt.flush_table("mangle");
     }
 
-    fn test(&self) {
-       // self.ipt.exists()
-    }
-
-    fn list_rules(&self) -> HashSet<IptablesPortRule> {
-        self.ipt.list_table("mangle").unwrap().into_iter().map(|rule| IptablesPortRule::try_from(rule)).filter(|e| e.is_ok()).map(|e| e.unwrap()).collect()
+    fn list_rules(&self) -> HashSet<InternalIptablesPortRule> {
+        self.ipt.list_table("mangle").unwrap()
+            .into_iter()
+            .map(|rule| InternalIptablesPortRule::try_from(rule))
+            .filter(|e| e.is_ok())
+            .map(|e| e.unwrap())
+            .collect()
     }
 
     fn insert_rules(&self) {
         self.config.priority_ports.iter().for_each(|r| {
-            let d:IptablesPortRule = (r,&self.config.homenet).into();
+            let d: InternalIptablesPortRule = (r, &self.config.homenet).into();
             self.add_iptables_rule(&d);
         })
     }
 
-    fn get_altered_rules<'a>(&self, existing_rules: &'a HashSet<IptablesPortRule>, rules_from_config: &'a HashSet<IptablesPortRule>) -> IpTablesRuleDiff<'a> {
+    fn get_altered_rules<'a>(&self, existing_rules: &'a HashSet<InternalIptablesPortRule>, rules_from_config: &'a HashSet<InternalIptablesPortRule>) -> IpTablesRuleDiff<'a> {
         let to_delete = existing_rules.difference(&rules_from_config).collect();
         let to_add = rules_from_config.difference(&existing_rules).collect();
         let same = rules_from_config.intersection(&existing_rules).collect();
@@ -173,7 +214,7 @@ impl Manager<'_> {
     }
 
     fn sync(&self, diff: &IpTablesRuleDiff) {
-        println!("Add {} rules and delete {}. {} Are the same.", diff.added.len(), diff.deleted.len(), diff.same.len());
+        println!("Add {} iptables rules and delete {}. {} Are the same.", diff.added.len(), diff.deleted.len(), diff.same.len());
         diff.added.iter().for_each(|r| self.add_iptables_rule(r));
         diff.deleted.iter().for_each(|r| self.delete_iptables_rule(r));
     }
@@ -199,20 +240,24 @@ impl IpRoute2 {
         Command::new("ip")
     }
 
-    fn add_route(&self, ip: &str, nic: &str, std_route: &str) {
-        let d = self.get_cmd().arg("route").arg("add").arg(ip).arg("via").arg(std_route).arg("dev").arg(nic).output().unwrap();
-        println!("{}", String::from_utf8(d.stderr).unwrap());
-        println!("meem: {}", d.status);
+    fn list_routes(&self) -> Vec<InternalIpRule> {
+        let stdout = self.get_cmd().arg("route").output().unwrap().stdout;
 
+        String::from_utf8_lossy(stdout.as_slice())
+            .trim()
+            .split('\n')
+            .map(String::from)
+            .map(|str| InternalIpRule::try_from(str).unwrap())
+            .collect()
+    }
+
+    fn add_route(&self, rule: &InternalIpRule) {
+        let d = self.get_cmd().arg("route").arg("add").args(String::from(rule).split(" ")).output().unwrap();
         assert!(d.status.success());
     }
 
     fn delete_route(&self, ip: &str, nic: &str, std_route: &str) {
         let d = self.get_cmd().arg("route").arg("delete").arg(ip).arg("via").arg(std_route).arg("dev").arg(nic).output().unwrap();
-
-        println!("{}", String::from_utf8(d.stderr).unwrap());
-        println!("meem: {}", d.status);
-
         assert!(d.status.success());
     }
 
@@ -237,17 +282,18 @@ fn main() {
     //println!("{:#?}", configs);
 
     let iproute2 = IpRoute2{};
+    iproute2.list_routes().into_iter().for_each(|e| println!("{:#?}", e));
     let outcome : (Vec<_>,Vec<_>) = config.sinks.iter().map(|sink| iproute2.check_gateway(&sink.nic, &sink.ip)).partition(|r| r.is_err());
 
-    let manager = Manager::new(&config);
+    let manager = IPTablesManager::new(&config);
 
-    let existing_rules: HashSet<IptablesPortRule> = manager.list_rules();
-    let rules_from_config: HashSet<IptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p,&manager.config.homenet).into()).collect();
+    let existing_rules: HashSet<InternalIptablesPortRule> = manager.list_rules();
+    let rules_from_config: HashSet<InternalIptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p, &manager.config.homenet).into()).collect();
     let overview = manager.get_altered_rules(&existing_rules, &rules_from_config);
 
-    let rules = manager.list_rules();
     manager.sync(&overview);
    // manager.add_iptables_rule(&config.priority_ports.first().unwrap());
+    let rules = manager.list_rules();
     rules.iter().for_each(|e|println!("{:#?}",e))
 
 
