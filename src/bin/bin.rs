@@ -9,12 +9,14 @@ use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::Hash;
 use std::num::ParseIntError;
 use serde_yaml::from_reader;
 use serde::{Serialize, Deserialize};
 use std::process::{Command, ExitStatus};
 use std::thread::sleep;
 use std::time::Duration;
+use itertools::Itertools;
 use regex::Regex;
 use lazy_static::lazy_static;
 
@@ -164,6 +166,12 @@ struct IpTablesRuleDiff<'a> {
     same: Vec<&'a InternalIptablesPortRule>
 }
 
+struct IpRuleDiff<'a> {
+    added: Vec<&'a InternalIpRule>,
+    deleted: Vec<&'a InternalIpRule>,
+    same: Vec<&'a InternalIpRule>
+}
+
 impl IPTablesManager<'_> {
 
     fn new(config: &Config) -> IPTablesManager {
@@ -201,7 +209,7 @@ impl IPTablesManager<'_> {
         })
     }
 
-    fn get_altered_rules<'a>(&self, existing_rules: &'a HashSet<InternalIptablesPortRule>, rules_from_config: &'a HashSet<InternalIptablesPortRule>) -> IpTablesRuleDiff<'a> {
+    fn get_rule_diff<'a>(&self, existing_rules: &'a HashSet<InternalIptablesPortRule>, rules_from_config: &'a HashSet<InternalIptablesPortRule>) -> IpTablesRuleDiff<'a> {
         let to_delete = existing_rules.difference(&rules_from_config).collect();
         let to_add = rules_from_config.difference(&existing_rules).collect();
         let same = rules_from_config.intersection(&existing_rules).collect();
@@ -230,17 +238,32 @@ enum ParseError {
     Error(String)
 }
 
-struct IpRoute2 {
-
+struct IpRoute2<'a> {
+    config: &'a Config,
 }
 
-impl IpRoute2 {
+impl IpRoute2<'_> {
 
     fn get_cmd(&self) -> Command {
         Command::new("ip")
     }
 
-    fn list_routes(&self) -> Vec<InternalIpRule> {
+    fn calc_internal_rules_from_config(&self) -> HashSet<InternalIpRule> {
+        let sinks = self.config.sinks.iter().into_group_map_by(|e| &e.name);
+        self.config.priority_ip.iter().map(|rule| {
+            let name = rule.priority.first().unwrap();
+            let sink = sinks.get(name).unwrap().first().unwrap();
+            rule.ips.iter().map(|r| {
+                InternalIpRule {
+                    nic: (&sink.nic).to_string(),
+                    ip: (r).to_string(),
+                    gateway: Some((&sink.ip).to_string()),
+                }
+            }).collect::<HashSet<_>>()
+        }).flatten().collect()
+    }
+
+    fn list_routes(&self) -> HashSet<InternalIpRule> {
         let stdout = self.get_cmd().arg("route").output().unwrap().stdout;
 
         String::from_utf8_lossy(stdout.as_slice())
@@ -249,6 +272,18 @@ impl IpRoute2 {
             .map(String::from)
             .map(|str| InternalIpRule::try_from(str).unwrap())
             .collect()
+    }
+
+    fn get_route_diff<'a>(&self, rules_from_config: &'a HashSet<InternalIpRule>, existing_rules: &'a HashSet<InternalIpRule>) -> IpRuleDiff<'a> {
+        let to_delete = existing_rules.difference(&rules_from_config).collect();
+        let to_add = rules_from_config.difference(&existing_rules).collect();
+        let same = rules_from_config.intersection(&existing_rules).collect();
+
+        IpRuleDiff {
+            added: to_add,
+            deleted: to_delete,
+            same
+        }
     }
 
     fn add_route(&self, rule: &InternalIpRule) {
@@ -281,7 +316,15 @@ fn main() {
     let config: Config = from_reader(f).unwrap();
     //println!("{:#?}", configs);
 
-    let iproute2 = IpRoute2{};
+    let iproute2 = IpRoute2{ config: &config };
+
+    let b = iproute2.calc_internal_rules_from_config();
+    let active = &iproute2.list_routes();
+    let a = iproute2.get_route_diff(&b, &active);
+    b.iter().for_each(|c| {
+        iproute2.add_route(c);
+    });
+
     iproute2.list_routes().into_iter().for_each(|e| println!("{:#?}", e));
     let outcome : (Vec<_>,Vec<_>) = config.sinks.iter().map(|sink| iproute2.check_gateway(&sink.nic, &sink.ip)).partition(|r| r.is_err());
 
@@ -289,7 +332,7 @@ fn main() {
 
     let existing_rules: HashSet<InternalIptablesPortRule> = manager.list_rules();
     let rules_from_config: HashSet<InternalIptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p, &manager.config.homenet).into()).collect();
-    let overview = manager.get_altered_rules(&existing_rules, &rules_from_config);
+    let overview = manager.get_rule_diff(&existing_rules, &rules_from_config);
 
     manager.sync(&overview);
    // manager.add_iptables_rule(&config.priority_ports.first().unwrap());

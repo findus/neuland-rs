@@ -11,3 +11,4 @@ serde = {version = "1.0.130", features = ["derive"]}
 serde_yaml = "0.8.21"
 regex = "1"
 lazy_static = "1.4.0"
+itertools = "0.10.1"
