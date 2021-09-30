@@ -357,12 +357,13 @@ fn main() {
 
     log::info!("Will add {} and delete {} IP Rules .. {} are the same.", a.added.len().to_string().green(), a.deleted.len().to_string().red(), a.same.len().to_string().white());
 
-    a.added.iter().for_each(|c| {
-        iproute2.add_route(c);
-    });
 
     a.deleted.iter().for_each(|c| {
         iproute2.delete_route(c);
+    });
+
+    a.added.iter().for_each(|c| {
+        iproute2.add_route(c);
     });
 
     let outcome : (Vec<_>,Vec<_>) = config.sinks.iter().map(|sink| iproute2.check_gateway(&sink.nic, &sink.ip)).partition(|r| r.is_err());
