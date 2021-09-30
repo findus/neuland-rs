@@ -25,6 +25,7 @@ priority_ports:
     ports: "2099,5223,5222"
 priority_ip:
   - league:
+    name: league
     priority:
       - adsl
       - lte
@@ -42,9 +43,10 @@ priority_ip:
       - 185.40.66.0/24
       - 185.40.67.0/24
   - twitch:
+    name: twitch
     priority:
-      - adsl
       - lte
+      - adsl
     ips:
       - 185.42.204.0/22
       - 103.53.48.0/23
@@ -59,6 +61,7 @@ priority_ip:
       - 99.181.88.0/21
       - 99.181.96.0/19
   - default_route:
+    name: default_route
     priority:
       - lte
       - adsl

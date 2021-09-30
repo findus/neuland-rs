@@ -54,7 +54,8 @@ struct PortRule {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct IPRule {
     priority: Vec<String>,
-    ips: Vec<String>
+    ips: Vec<String>,
+    name: String
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -93,7 +94,7 @@ impl TryFrom<String> for InternalIpRule {
     type Error = ParseError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let dev_capture = route_dev_regex.captures(&value).ok_or(ParseError::Error("device not found".to_string()))?;
+        let dev_capture = route_dev_regex.captures(&value).ok_or(ParseError::Error("device_capture not found".to_string()))?;
         let gw_capture = route_gateway_regex.captures(&value);
 
         let ip = value.split(" ").into_iter().nth(0).unwrap().to_string();
@@ -265,6 +266,7 @@ impl IpRoute2<'_> {
         self.config.priority_ip.iter().map(|rule| {
             let first_available_sink = rule.priority.iter().filter(|pr| sinks.contains_key(&*pr.to_string())).nth(0).unwrap();
             let sink = sinks.get(first_available_sink).unwrap().first().unwrap();
+            log::info!("Sink for {}: {}", rule.name, sink.name);
             rule.ips.iter().map(|r| {
                 InternalIpRule {
                     nic: (&sink.nic).to_string(),
@@ -277,7 +279,9 @@ impl IpRoute2<'_> {
 
     fn list_routes(&self) -> HashSet<InternalIpRule> {
         let stdout = self.get_cmd().arg("route").output().unwrap().stdout;
-
+        if stdout.len() == 0 {
+            return HashSet::new();
+        }
         String::from_utf8_lossy(stdout.as_slice())
             .trim()
             .split('\n')
