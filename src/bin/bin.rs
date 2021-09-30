@@ -4,8 +4,11 @@ extern crate serde_yaml;
 extern crate regex;
 #[macro_use]
 extern crate lazy_static;
+extern crate log;
+extern crate env_logger;
+extern crate colored;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
@@ -19,6 +22,7 @@ use std::time::Duration;
 use itertools::Itertools;
 use regex::Regex;
 use lazy_static::lazy_static;
+use colored::Colorize;
 
 lazy_static! {
     static ref iptables_regex: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) --?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})").unwrap();
@@ -222,7 +226,6 @@ impl IPTablesManager<'_> {
     }
 
     fn sync(&self, diff: &IpTablesRuleDiff) {
-        println!("Add {} iptables rules and delete {}. {} Are the same.", diff.added.len(), diff.deleted.len(), diff.same.len());
         diff.added.iter().for_each(|r| self.add_iptables_rule(r));
         diff.deleted.iter().for_each(|r| self.delete_iptables_rule(r));
     }
@@ -244,15 +247,24 @@ struct IpRoute2<'a> {
 
 impl IpRoute2<'_> {
 
+    fn get_active_sinks<'a>(&'a self) -> HashMap<String, Vec<&'a Sink>> {
+        self.config.sinks
+            .iter()
+            .filter( |sink| String::from_utf8(self.get_cmd().args(&["link", "show", &sink.nic]).output().unwrap().stdout).unwrap().contains("state"))
+            .into_group_map_by(|e| e.name.to_string())
+    }
+
+
     fn get_cmd(&self) -> Command {
         Command::new("ip")
     }
 
     fn calc_internal_rules_from_config(&self) -> HashSet<InternalIpRule> {
-        let sinks = self.config.sinks.iter().into_group_map_by(|e| &e.name);
+        let sinks = self.get_active_sinks();
+
         self.config.priority_ip.iter().map(|rule| {
-            let name = rule.priority.first().unwrap();
-            let sink = sinks.get(name).unwrap().first().unwrap();
+            let first_available_sink = rule.priority.iter().filter(|pr| sinks.contains_key(&*pr.to_string())).nth(0).unwrap();
+            let sink = sinks.get(first_available_sink).unwrap().first().unwrap();
             rule.ips.iter().map(|r| {
                 InternalIpRule {
                     nic: (&sink.nic).to_string(),
@@ -287,13 +299,16 @@ impl IpRoute2<'_> {
     }
 
     fn add_route(&self, rule: &InternalIpRule) {
-        let d = self.get_cmd().arg("route").arg("add").args(String::from(rule).split(" ")).output().unwrap();
-        assert!(d.status.success());
+        let mut cmd = self.get_cmd();
+        let e = (&mut cmd).arg("route").arg("add").args(String::from(rule).split(" "));
+        log::debug!("{:#?}",e);
+        let o = e.output().unwrap().stderr;
+        print_output(o);
     }
 
-    fn delete_route(&self, ip: &str, nic: &str, std_route: &str) {
-        let d = self.get_cmd().arg("route").arg("delete").arg(ip).arg("via").arg(std_route).arg("dev").arg(nic).output().unwrap();
-        assert!(d.status.success());
+    fn delete_route(&self, rule: &InternalIpRule) {
+        let d = self.get_cmd().arg("route").arg("delete").args(String::from(rule).split(" ")).output().unwrap().stderr;
+        print_output(d);
     }
 
     fn check_gateway(&self, nic: &str,gateway: &str) -> Result<(), IpRouteError> {
@@ -309,23 +324,43 @@ impl IpRoute2<'_> {
     }
 }
 
+fn print_output(output: Vec<u8>) {
+    String::from_utf8_lossy( output.as_slice())
+        .trim()
+        .split('\n')
+        .map(String::from)
+        .for_each(|e| {
+            log::debug!("{}",e.red());
+        });
+}
+
 fn main() {
-    println!("Hello, world!");
+    env_logger::init();
+    String::from_utf8_lossy(Command::new("whoami").output().unwrap().stdout.as_slice())
+        .trim()
+        .split('\n')
+        .map(String::from)
+        .for_each(|e|     println!("I am {}",e ));
 
     let f =  std::fs::File::open("rule_file.yaml").unwrap();
     let config: Config = from_reader(f).unwrap();
-    //println!("{:#?}", configs);
 
     let iproute2 = IpRoute2{ config: &config };
 
     let b = iproute2.calc_internal_rules_from_config();
     let active = &iproute2.list_routes();
     let a = iproute2.get_route_diff(&b, &active);
-    b.iter().for_each(|c| {
+
+    log::info!("Will add {} and delete {} IP Rules .. {} are the same.", a.added.len().to_string().green(), a.deleted.len().to_string().red(), a.same.len().to_string().white());
+
+    a.added.iter().for_each(|c| {
         iproute2.add_route(c);
     });
 
-    iproute2.list_routes().into_iter().for_each(|e| println!("{:#?}", e));
+    a.deleted.iter().for_each(|c| {
+        iproute2.delete_route(c);
+    });
+
     let outcome : (Vec<_>,Vec<_>) = config.sinks.iter().map(|sink| iproute2.check_gateway(&sink.nic, &sink.ip)).partition(|r| r.is_err());
 
     let manager = IPTablesManager::new(&config);
@@ -333,11 +368,10 @@ fn main() {
     let existing_rules: HashSet<InternalIptablesPortRule> = manager.list_rules();
     let rules_from_config: HashSet<InternalIptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p, &manager.config.homenet).into()).collect();
     let overview = manager.get_rule_diff(&existing_rules, &rules_from_config);
-
+    log::info!("Will add {} and delete {} IPtables Rules .. {} are the same.", overview.added.len().to_string().green(), overview.deleted.len().to_string().red(), overview.same.len().to_string().white());
     manager.sync(&overview);
    // manager.add_iptables_rule(&config.priority_ports.first().unwrap());
     let rules = manager.list_rules();
-    rules.iter().for_each(|e|println!("{:#?}",e))
 
 
     //d.add_route("10.0.0.2", "eth0", "10.0.0.1")
