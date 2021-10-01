@@ -311,8 +311,11 @@ impl IpRoute2<'_> {
     }
 
     fn delete_route(&self, rule: &InternalIpRule) {
-        let d = self.get_cmd().arg("route").arg("delete").args(String::from(rule).split(" ")).output().unwrap().stderr;
-        print_output(d);
+        let mut cmd = self.get_cmd();
+        let e = (&mut cmd).arg("route").arg("delete").args(String::from(rule).split(" "));
+        log::debug!("{:#?}",e);
+        let o = e.output().unwrap().stderr;
+        print_output(o);
     }
 
     fn check_gateway(&self, nic: &str,gateway: &str) -> Result<(), IpRouteError> {
