@@ -1,14 +1,14 @@
 ---
 homenet:
-    ip: 172.24.16.0/20
-    input_nic: eth0
+  ip: 192.168.178.0/24
+  input_nic: eth0
 sinks:
-  - name: lte
-    ip: 172.24.20.221
+  - name: 5g
+    ip: 192.168.178.48
     nic: eth0
-    udp: true
+    udp: false
   - name: adsl
-    ip: 172.24.20.220
+    ip: 192.168.178.1
     nic: eth0
     udp: true
 priority_ports:
@@ -27,55 +27,37 @@ priority_ports:
     ports: "2099,5223,5222"
   - udp:
     protocol: udp
+  - guild_wars_2:
+    protocol: tcp
+    not: false
+    ports: "6112"
 priority_ip:
   - udp:
     name: udp
     priority:
-      - lte
       - adsl
+      - 5g
     ips:
       - default
     table: udp_routing_table
-  - league:
-    name: league
-    priority:
-      - adsl
-      - lte
-    ips:
-      - 162.249.72.0/24
-      - 162.249.73.0/24
-      - 162.249.74.0/24
-      - 162.249.75.0/24
-      - 162.249.76.0/24
-      - 162.249.77.0/24
-      - 162.249.78.0/24
-      - 162.249.79.0/24
-      - 185.40.64.0/24
-      - 185.40.65.0/24
-      - 185.40.66.0/24
-      - 185.40.67.0/24
   - twitch:
     name: twitch
     priority:
-      - lte
+      - 5g
       - adsl
     ips:
-      - 185.42.204.0/22
-      - 103.53.48.0/23
-      - 192.108.239.0/24
-      - 192.16.64.0/21
-      - 199.0.248.0/21
-      - 23.160.0.0/24
       - 45.113.128.0/22
-      - 52.223.208.0/21
-      - 52.223.224.0/20
-      - 99.181.80.0/21
-      - 99.181.88.0/21
-      - 99.181.96.0/19
+      - 52.223.192.0/18
+      - 99.181.64.0/18
+      - 103.53.48.0/23
+      - 185.42.204.0/22
+      - 192.16.64.0/21
+      - 192.108.239.0/24
+      - 199.9.248.0/21
   - default_route:
     name: default_route
     priority:
-      - lte
+      - 5g
       - adsl
     ips:
       - default
