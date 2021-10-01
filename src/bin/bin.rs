@@ -287,6 +287,8 @@ impl IpRoute2<'_> {
             .split('\n')
             .map(String::from)
             .map(|str| InternalIpRule::try_from(str).unwrap())
+            //dont delete nexthop
+            .filter(|rule| rule.ip.eq(&self.config.homenet.ip) == false)
             .collect()
     }
 
