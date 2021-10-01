@@ -31,6 +31,10 @@ priority_ports:
     protocol: tcp
     not: false
     ports: "6112"
+  - starcraft_2:
+    protocol: udp
+    not: false
+    ports: "1119,6113,1120,3724"
 priority_ip:
   - udp:
     name: udp
