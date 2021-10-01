@@ -1,10 +1,9 @@
 use std::convert::TryFrom;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use crate::print_output;
 use std::process::Command;
 use std::fs::{OpenOptions, File};
-use crate::cfg::{Config, ParseError, Sink};
-use itertools::Itertools;
+use crate::cfg::{Config, ParseError, Sink, IPRule};
 use std::io::Read;
 use std::io::Write;
 use crate::ROUTE_DEV_REGEX;
@@ -72,11 +71,11 @@ impl From<&InternalIpRule> for String {
 
 impl IpRoute2<'_> {
 
-    fn get_active_sinks(&self) -> HashMap<String, Vec<&Sink>> {
+    fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
             .iter()
             .filter( |sink| String::from_utf8(self.get_cmd().args(&["link", "show", &sink.nic]).output().unwrap().stdout).unwrap().contains("state"))
-            .into_group_map_by(|e| e.name.to_string())
+            .collect()
     }
 
     pub(crate) fn setup_udp_routing_table(&self) {
@@ -106,14 +105,8 @@ impl IpRoute2<'_> {
 
         self.config.priority_ip.iter().map(|rule| {
 
-            let first_available_sink = if rule.name.eq("udp") == false {
-                rule.priority.iter().filter(|pr| sinks.contains_key(&*pr.to_string())).nth(0).unwrap()
-            } else {
-                let e: HashMap<_,_> = sinks.iter().filter(|(_,d)| d.first().unwrap().udp).collect();
-                rule.priority.iter().filter(|pr| e.contains_key(pr)).nth(0).unwrap()
-            };
-
-            let sink = sinks.get(first_available_sink).unwrap().first().unwrap();
+            let first_available_sink = self.get_first_avaliable_sink(&sinks, rule);
+            let sink = sinks.iter().filter(|s| s.name.eq(&first_available_sink)).nth(0).unwrap();
             log::info!("Sink for {}: {}", rule.name, sink.name);
             rule.ips.iter().map(|r| {
                 InternalIpRule {
@@ -124,6 +117,15 @@ impl IpRoute2<'_> {
                 }
             }).collect::<HashSet<_>>()
         }).flatten().collect()
+    }
+
+    fn get_first_avaliable_sink(&self, sinks: &Vec<&Sink>, rule: &IPRule) -> String {
+        let first_available_sink = if rule.name.eq("udp") == false {
+            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name))).nth(0).unwrap().name.to_string()
+        } else {
+            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name) && e.udp)).nth(0).unwrap().name.to_string()
+        };
+        first_available_sink.to_string()
     }
 
     pub(crate) fn list_routes(&self) -> HashSet<InternalIpRule> {
@@ -204,5 +206,54 @@ impl IpRoute2<'_> {
         } else {
             Err(IpRouteError::Error(message))
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::cfg::{Config, IPRule};
+    use serde_yaml::from_reader;
+    use crate::route::IpRoute2;
+
+    #[test]
+    fn udp_priority_lte() {
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+        let iproute2 = IpRoute2{ config: &config };
+
+        let rule = IPRule {
+            priority: vec!["lte".to_string(), "adsl".to_string()],
+            ips: vec!["1.1.1.1".to_string()],
+            name: "udp".to_string(),
+            table: Some("udp_routing_table".to_string())
+        };
+
+        let active_sink_map = iproute2.get_active_sinks();
+
+        let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
+
+        let sink_name = &active_sink_map.iter().filter(|s| s.name.eq(&active_sink)).nth(0).unwrap().name;
+        assert_eq!("lte", sink_name);
+    }
+
+    #[test]
+    fn udp_priority_adsl() {
+        let f =  std::fs::File::open("test_udp_rule_adsl.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+        let iproute2 = IpRoute2{ config: &config };
+
+        let rule = IPRule {
+            priority: vec!["adsl".to_string(), "lte".to_string()],
+            ips: vec!["1.1.1.1".to_string()],
+            name: "udp".to_string(),
+            table: Some("udp_routing_table".to_string())
+        };
+
+        let active_sink_map = iproute2.get_active_sinks();
+
+        let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
+
+        let sink_name = &active_sink_map.iter().filter(|s| s.name.eq(&active_sink)).nth(0).unwrap().name;
+        assert_eq!("adsl", sink_name);
     }
 }
