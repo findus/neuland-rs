@@ -16,7 +16,7 @@ priority_ports:
     protocol: udp
     not: false
     length: 0:200
-    ports: "5000:65535"
+    ports: "50000:65535"
   - https_and_vpn:
     not: true
     protocol: udp
