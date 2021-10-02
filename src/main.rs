@@ -81,6 +81,7 @@ fn main() {
     let overview = manager.get_rule_diff(&existing_rules, &rules_from_config);
     log::info!("Will add {} and delete {} IPtables Rules .. {} are the same.", overview.added.len().to_string().green(), overview.deleted.len().to_string().red(), overview.same.len().to_string().white());
     manager.sync(&overview);
+    manager.print_summary();
 
 }
 

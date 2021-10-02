@@ -114,4 +114,15 @@ impl IPTablesManager<'_> {
         diff.added.iter().for_each(|r| self.add_iptables_rule(r));
     }
 
+    pub(crate) fn print_summary(&self) {
+        let rules = self.list_rules();
+        let ports: (Vec<InternalIptablesPortRule>,Vec<InternalIptablesPortRule>) = rules
+            .into_iter()
+            .filter(|e|e.ports.is_some())
+            .partition(|e| e.not.unwrap_or(false) == true);
+
+        log::info!("Ports marked for udp routing: {}", ports.1.iter().filter_map(|e| e.ports.as_ref().map(|e|e.clone())).collect::<Vec<_>>().join(", "));
+        log::info!("Ports marked for NOT using udp routing: {}", ports.0.iter().filter_map(|e| e.ports.as_ref().map(|e| e.clone())).collect::<Vec<_>>().join(", "));
+    }
+
 }
