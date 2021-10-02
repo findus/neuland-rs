@@ -38,6 +38,11 @@ priority_ports:
     protocol: udp
     not: false
     ports: "1119,6113,1120,3724"
+  - league:
+    protocol: udp
+    not: false
+    ports: "5000:5500"
+    mark: 0
 priority_ip:
   - udp:
     name: udp

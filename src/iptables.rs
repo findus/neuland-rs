@@ -48,10 +48,11 @@ impl From<&InternalIptablesPortRule> for String {
         let nic = iptables_rule.nic.to_string();
         let protocol = iptables_rule.protocol.to_string();
         let not = if iptables_rule.not.unwrap_or(false) {" ! "} else { "" };
+        let mark = iptables_rule.mark;
         if let Some(dports) = iptables_rule.ports.clone() {
-            format!("-s {} -i {} -p {} -m multiport {} --dports {} -j MARK --set-mark 1",source, nic, protocol,not, dports)
+            format!("-s {} -i {} -p {} -m multiport {} --dports {} -j MARK --set-mark {}",source, nic, protocol,not, dports, mark)
         } else {
-            format!("-s {} -i {} -p {} -j MARK --set-mark 1",source, nic, protocol)
+            format!("-s {} -i {} -p {} -j MARK --set-mark {}",source, nic, protocol, mark)
         }
     }
 }
@@ -60,7 +61,7 @@ impl From<(&PortRule,&Homenet)> for InternalIptablesPortRule {
     fn from((rule,homenet): (&PortRule, &Homenet)) -> Self {
         InternalIptablesPortRule {
             nic: homenet.input_nic.to_string(),
-            mark: 1,
+            mark: rule.mark.unwrap_or(1),
             not: rule.not,
             source: homenet.ip.to_string(),
             protocol: rule.protocol.to_string(),

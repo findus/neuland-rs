@@ -48,5 +48,6 @@ pub struct PortRule {
     pub(crate) not: Option<bool>,
     length: Option<String>,
     pub(crate) ports: Option<String>,
-    pub(crate) protocol: String
+    pub(crate) protocol: String,
+    pub(crate) mark: Option<u8>
 }
