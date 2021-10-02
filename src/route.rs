@@ -3,7 +3,7 @@ use std::collections::{HashSet};
 use crate::print_output;
 use std::process::Command;
 use std::fs::{OpenOptions, File};
-use crate::cfg::{Config, ParseError, Sink, IPRule};
+use crate::cfg::{Config, ParseError, Sink, IPRule, Nic};
 use std::io::Read;
 use std::io::Write;
 use crate::ROUTE_DEV_REGEX;
@@ -70,6 +70,35 @@ impl From<&InternalIpRule> for String {
 }
 
 impl IpRoute2<'_> {
+
+    pub(crate) fn setup_nics(&self) {
+        self.config.nics.iter().for_each(|nic| {
+            if self.is_nic_up(nic) == false || self.nic_has_ip(nic) == false {
+                log::info!("Will configure NIC {}", nic.nic);
+                let out = self.get_cmd().args(&["link", "set", &nic.nic, "up"]).output().unwrap();
+                let o = out.stderr;
+                print_output(o);
+                let out = self.get_cmd().args(&["addr", "flush", &nic.nic]).output().unwrap();
+                let o = out.stderr;
+                print_output(o);
+                let out = self.get_cmd().args(&["addr", "add", &nic.ip, "dev", &nic.nic]).output().unwrap();
+                let o = out.stderr;
+                print_output(o);
+            } else {
+                log::info!("NIC already configured: {}", nic.nic);
+            }
+        });
+    }
+
+    fn is_nic_up(&self, nic: &Nic) -> bool {
+        let out = String::from_utf8(self.get_cmd().args(&["link", "show", &nic.nic]).output().unwrap().stdout).unwrap();
+        out.contains("state UP") == true
+    }
+
+    fn nic_has_ip(&self, nic: &Nic) -> bool {
+        let out = String::from_utf8(self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output().unwrap().stdout).unwrap();
+        out.contains(&nic.ip)
+    }
 
     fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
@@ -151,6 +180,7 @@ impl IpRoute2<'_> {
             .trim()
             .split('\n')
             .map(String::from)
+            .filter(|e| e.is_empty() == false)
             .map(|str| {
 
                 let mut temp = InternalIpRule::try_from(str).unwrap();

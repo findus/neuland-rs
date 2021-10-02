@@ -63,6 +63,7 @@ fn main() {
 
     log::info!("Will add {} and delete {} IP Rules .. {} are the same.", a.added.len().to_string().green(), a.deleted.len().to_string().red(), a.same.len().to_string().white());
 
+    iproute2.setup_nics();
     iproute2.setup_udp_routing_table();
 
     a.deleted.iter().for_each(|c| {

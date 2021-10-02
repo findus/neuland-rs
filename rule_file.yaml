@@ -2,6 +2,9 @@
 homenet:
   ip: 192.168.178.0/24
   input_nic: eth0
+nics:
+  - nic: eth0
+    ip: 192.168.178.46/24
 sinks:
   - name: 5g
     ip: 192.168.178.48

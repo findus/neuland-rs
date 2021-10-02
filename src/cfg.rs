@@ -18,9 +18,16 @@ pub struct Sink {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub(crate) homenet: Homenet,
+    pub(crate) nics: Vec<Nic>,
     pub(crate) sinks: Vec<Sink>,
     pub(crate) priority_ports: Vec<PortRule>,
     pub(crate) priority_ip: Vec<IPRule>
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct Nic {
+    pub(crate) nic: String,
+    pub(crate) ip: String,
 }
 
 #[derive(Debug,PartialEq)]
