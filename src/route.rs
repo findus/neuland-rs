@@ -100,6 +100,11 @@ impl IpRoute2<'_> {
         out.contains(&nic.ip)
     }
 
+    fn rule_active(&self) -> bool {
+        let out = String::from_utf8(self.get_cmd().args(&["rule"]).output().unwrap().stdout).unwrap();
+        out.contains("udp_routing_table")
+    }
+
     fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
             .iter()
@@ -119,9 +124,13 @@ impl IpRoute2<'_> {
                 panic!();
             }
 
-            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output().unwrap();
-
         }
+
+        if self.rule_active() == false {
+            log::info!("Adding fwmark rule to routing table");
+            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output().unwrap();
+        }
+
     }
 
 
