@@ -2,6 +2,9 @@
 homenet:
   ip: 172.24.16.0/20
   input_nic: eth0
+nics:
+  - nic: eth0
+    ip: 172.24.20.0/24
 sinks:
   - name: lte
     ip: 172.24.20.221
