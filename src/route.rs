@@ -82,7 +82,7 @@ impl IpRoute2<'_> {
 
     pub(crate) fn setup_nics(&self) -> Vec<IpRouteError> {
         self.config.nics.iter().map(|nic| {
-            if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip(nic)? == false {
+            if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip_as_config(nic)? == false {
                 log::info!("Will configure NIC {}", nic.nic);
                 self.get_cmd().args(&["link", "set", &nic.nic, "up"]).output()?.pexit_ok()?;
                 self.get_cmd().args(&["addr", "flush", &nic.nic]).output()?.pexit_ok()?;
@@ -107,7 +107,7 @@ impl IpRoute2<'_> {
         Ok(out.0.contains("state UP") == true)
     }
 
-    fn nic_has_same_ip(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
+    fn nic_has_same_ip_as_config(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
         let out = self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
         Ok(out.0.contains(&nic.ip) == true)
     }

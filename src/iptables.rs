@@ -122,11 +122,11 @@ impl IPTablesManager<'_> {
             .filter(|e|e.ports.is_some())
             .partition(|e| e.not.unwrap_or(false) == true);
 
-        log::info!("TCP Ports marked: {}", ports.1.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|e|e.clone())).collect::<Vec<_>>().join(", "));
-        log::info!("UDP Ports marked: {}", ports.1.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|e|e.clone())).collect::<Vec<_>>().join(", "));
+        log::info!("TCP Ports marked: {}", ports.1.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
+        log::info!("UDP Ports marked: {}", ports.1.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
         log::info!(" ");
-        log::info!("TCP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|e| e.clone())).collect::<Vec<_>>().join(", "));
-        log::info!("UDP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|e| e.clone())).collect::<Vec<_>>().join(", "));
+        log::info!("TCP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
+        log::info!("UDP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
     }
 
 }
