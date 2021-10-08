@@ -1,6 +1,5 @@
 use std::convert::TryFrom;
 use std::collections::{HashSet};
-use crate::{print_output, ProcOutput};
 use std::process::Command;
 use std::fs::{OpenOptions, File};
 use crate::cfg::{Config, ParseError, Sink, IPRule, Nic};
@@ -9,18 +8,15 @@ use std::io::Write;
 use crate::ROUTE_DEV_REGEX;
 use crate::ROUTE_GATEWAY_REGEX;
 use crate::thiserror::Error;
-
+use crate::util::ProcOutput;
+use crate::util::ProcessError;
 
 #[derive(Error,Debug)]
 pub enum IpRouteError {
-    #[error("Gateway not found")]
-    GatewayNotFound(String),
-    #[error("Underlying IP command failed")]
-    CommandFailed(String),
     #[error(transparent)]
     CommandError(#[from] std::io::Error),
     #[error(transparent)]
-    ProcessFailed(#[from] crate::ProcessError)
+    ProcessFailed(#[from] ProcessError)
 }
 
 pub struct IpRoute2<'a> {
@@ -80,7 +76,7 @@ impl From<&InternalIpRule> for String {
 
 impl IpRoute2<'_> {
 
-    pub(crate) fn setup_nics(&self) -> Vec<IpRouteError> {
+    pub(crate) fn setup_nics(&self) -> Result<Vec<()>, IpRouteError> {
         self.config.nics.iter().map(|nic| {
             if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip_as_config(nic)? == false {
                 log::info!("Will configure NIC {}", nic.nic);
@@ -92,9 +88,7 @@ impl IpRoute2<'_> {
                 log::info!("NIC already configured: {}", nic.nic);
                 Ok(())
             }
-        })
-            .filter_map(|r| r.err())
-            .collect()
+        }).collect()
     }
 
     fn is_nic_up(&self, nic: &Nic) -> Result<bool, IpRouteError> {
@@ -120,29 +114,28 @@ impl IpRoute2<'_> {
     fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
             .iter()
-            .filter( |sink| String::from_utf8(self.get_cmd().args(&["link", "show", &sink.nic]).output().unwrap().stdout).unwrap().contains("state"))
+            .filter( |sink| {
+                let out = self.get_cmd().args(&["link", "show", &sink.nic]).output();
+                out.is_ok() && out.unwrap().get_output_as_string().0.contains("state")
+            })
             .collect()
     }
 
-    pub(crate) fn setup_udp_routing_table(&self) {
+    pub(crate) fn setup_udp_routing_table(&self) -> Result<(), IpRouteError> {
         let mut file = String::new();
-        File::open("/etc/iproute2/rt_tables").unwrap().read_to_string(&mut file).unwrap();
+        File::open("/etc/iproute2/rt_tables")?.read_to_string(&mut file)?;
         if file.contains("udp_routing_table") == false {
             log::info!("UDP Routing table does not exist, gonna create it.");
-            let mut file = OpenOptions::new().write(true).append(true).open("/etc/iproute2/rt_tables").unwrap();
-
-            if let Err(e) = writeln!(file, "201 udp_routing_table") {
-                log::error!("Could not write to file {}", e);
-                panic!();
-            }
-
+            let mut file = OpenOptions::new().write(true).append(true).open("/etc/iproute2/rt_tables")?;
+            writeln!(file, "201 udp_routing_table")?
         }
 
         if self.rule_active() == false {
             log::info!("Adding fwmark rule to routing table");
-            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output().unwrap();
+            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output()?.pexit_ok()?;
         }
 
+        Ok(())
     }
 
 
@@ -151,8 +144,8 @@ impl IpRoute2<'_> {
     }
 
     pub(crate) fn calc_internal_rules_from_config(&self) -> HashSet<InternalIpRule> {
-        let sinks = self.get_active_sinks();
 
+        let sinks = self.get_active_sinks();
         self.config.priority_ip.iter().map(|rule| {
 
             let first_available_sink = self.get_first_avaliable_sink(&sinks, rule);
@@ -178,15 +171,15 @@ impl IpRoute2<'_> {
         first_available_sink.to_string()
     }
 
-    pub(crate) fn list_routes(&self) -> HashSet<InternalIpRule> {
-        let  stdout = self.get_cmd().arg("route").output().unwrap().stdout;
-        let  stdout_udp = self.get_cmd().args(&["route","show", "table", "udp_routing_table"]).output().unwrap().stdout;
+    pub(crate) fn list_routes(&self) -> Result<HashSet<InternalIpRule>, IpRouteError> {
+        let  stdout = self.get_cmd().arg("route").output()?.pexit_ok()?.get_output_as_string().0;
+        let  stdout_udp = self.get_cmd().args(&["route","show", "table", "udp_routing_table"]).output()?.pexit_ok()?.get_output_as_string().0;
 
         if stdout.len() == 0 {
-            return HashSet::new();
+            return Ok(HashSet::new());
         }
 
-        let mut rules: HashSet<_> = String::from_utf8_lossy(stdout.as_slice())
+        let mut rules: HashSet<_> = stdout
             .trim()
             .split('\n')
             .map(String::from)
@@ -197,7 +190,7 @@ impl IpRoute2<'_> {
             .filter(|rule| rule.nic.eq(&self.config.homenet.input_nic))
             .collect();
 
-        let udp_rules: HashSet<_> = String::from_utf8_lossy(stdout_udp.as_slice())
+        let udp_rules: HashSet<_> = stdout_udp
             .trim()
             .split('\n')
             .map(String::from)
@@ -215,7 +208,7 @@ impl IpRoute2<'_> {
             .collect();
 
         rules.extend(udp_rules);
-        rules
+        Ok(rules)
     }
 
     pub(crate) fn get_route_diff<'a>(&self, rules_from_config: &'a HashSet<InternalIpRule>, existing_rules: &'a HashSet<InternalIpRule>) -> IpRuleDiff<'a> {
@@ -306,7 +299,7 @@ mod test {
             table: Some("udp_routing_table".to_string())
         };
 
-        let active_sink_map = iproute2.get_active_sinks();
+        let active_sink_map = iproute2.get_active_sinks()?;
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
 
@@ -327,7 +320,7 @@ mod test {
             table: Some("udp_routing_table".to_string())
         };
 
-        let active_sink_map = iproute2.get_active_sinks();
+        let active_sink_map = iproute2.get_active_sinks()?;
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
 

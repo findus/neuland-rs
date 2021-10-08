@@ -1,6 +1,7 @@
 mod iptables;
 mod route;
 mod cfg;
+mod util;
 
 extern crate serde;
 extern crate serde_yaml;
@@ -9,11 +10,10 @@ extern crate lazy_static;
 extern crate log;
 extern crate env_logger;
 extern crate colored;
-extern crate thiserror;
 extern crate anyhow;
+extern crate thiserror;
 
 use std::collections::{HashSet};
-use std::io::Error;
 use std::num::ParseIntError;
 use serde_yaml::from_reader;
 use std::process::{Command, ExitStatus, Output};
@@ -23,7 +23,8 @@ use colored::Colorize;
 use crate::iptables::*;
 use crate::route::*;
 use crate::cfg::{ParseError, Config};
-use crate::thiserror::Error;
+use crate::anyhow::{Context,Result};
+use crate::util::ProcOutput;
 
 lazy_static! {
     static ref IPTABLES_REGEX: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
@@ -31,96 +32,27 @@ lazy_static! {
     static ref ROUTE_GATEWAY_REGEX: Regex = Regex::new(r"via ([^ \n]+)").unwrap();
 }
 
-#[derive(Error,Debug)]
-pub enum ProcessError {
-    #[error("Process exited with error")]
-    CommandFailed(i32, String),
-}
-
-
-impl From<ParseIntError> for ParseError {
-    fn from(e: ParseIntError) -> Self {
-        ParseError::Error(e.to_string())
-    }
-}
-
-
-fn print_output(output: Vec<u8>) {
-    String::from_utf8_lossy( output.as_slice())
-        .trim()
-        .split('\n')
-        .map(String::from)
-        .for_each(|e| {
-            log::debug!("{}",e.red());
-        });
-}
-
-pub trait ProcOutput {
-    fn get_output_as_string(&self) -> (String, String, ExitStatus);
-    fn pexit_ok(self) -> Result<Self, ProcessError> where Self: Sized;
-}
-
-impl ProcOutput for Output {
-    fn get_output_as_string(&self) -> (String, String, ExitStatus) {
-        (self.stdout.to_formatted_string(), self.stderr.to_formatted_string(), self.status)
-    }
-
-    fn pexit_ok(self) -> Result<Self, ProcessError> {
-        if self.status.success() {
-            Ok(self)
-        } else {
-            Err(ProcessError::CommandFailed(self.status.code().unwrap(), self.get_output_as_string().1))
-        }
-    }
-}
-
-pub trait VecToString {
-    fn to_formatted_string(&self) -> String;
-}
-
-impl VecToString for Vec<u8> {
-    fn to_formatted_string(&self) -> String {
-        String::from_utf8_lossy(self)
-            .trim()
-            .to_string()
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<()> {
     env_logger::init();
-    let whoami = Command::new("whoami").output()?.get_output_as_string().0;
+    let whoami = Command::new("whoami").output()?.pexit_ok()?.get_output_as_string().0;
     println!("{}", whoami);
 
-    let f =  std::fs::File::open("rule_file.yaml")?;
-    let config: Config = from_reader(f)?;
+    let config_file =  std::fs::File::open("rule_file.yaml")?;
+    let config: Config = from_reader(config_file)?;
+    let iproute2 = IpRoute2 { config: &config };
 
-    let iproute2 = IpRoute2{ config: &config };
+    let _ = iproute2.setup_nics().context("Could not setup nics")?;
 
-    let b = iproute2.calc_internal_rules_from_config();
-    let active = &iproute2.list_routes();
-    let a = iproute2.get_route_diff(&b, &active);
+    let internal_rules = iproute2.calc_internal_rules_from_config();
+    let active_rules = &iproute2.list_routes()?;
+    let diff = iproute2.get_route_diff(&internal_rules, &active_rules);
 
-    log::info!("Will add {} and delete {} IP Rules .. {} are the same.", a.added.len().to_string().green(), a.deleted.len().to_string().red(), a.same.len().to_string().white());
+    log::info!("Will add {} and delete {} IP Rules .. {} are the same.", diff.added.len().to_string().green(), diff.deleted.len().to_string().red(), diff.same.len().to_string().white());
 
-    let array  = iproute2.setup_nics();
-    if array.len() > 0 {
-        array.iter().for_each(|e| {
-            eprint!("Setting up NICs failed: {:?}", e);
-        });
-    }
+    iproute2.setup_udp_routing_table()?;
 
-
-    iproute2.setup_udp_routing_table();
-
-    a.deleted.iter().for_each(|c| {
-        iproute2.delete_route(c).unwrap()
-    });
-
-
-    a.added.iter().for_each(|c| {
-        iproute2.add_route(c).unwrap();
-    });
-
+    let _: Vec<()> = diff.deleted.into_iter().map(|c| { iproute2.delete_route(c) }).collect::<Result<Vec<_>,_>>().context("ip delete command failed")?;
+    let _: Vec<()> = diff.added.into_iter().map(|c| { iproute2.add_route(c) }).collect::<Result<Vec<_>,_>>().context("ip add command failed")?;
 
     let manager = IPTablesManager::new(&config);
 
@@ -128,9 +60,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rules_from_config: HashSet<InternalIptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p, &manager.config.homenet).into()).collect();
     let overview = manager.get_rule_diff(&existing_rules, &rules_from_config);
     log::info!("Will add {} and delete {} IPtables Rules .. {} are the same.", overview.added.len().to_string().green(), overview.deleted.len().to_string().red(), overview.same.len().to_string().white());
-    manager.sync(&overview);
+    manager.sync(&overview)?;
     manager.print_summary();
     Ok(())
+}
+
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("Error: {:#?}", err);
+        std::process::exit(1);
+    }
 }
 
 

@@ -1,8 +1,17 @@
 use std::collections::HashSet;
 use std::convert::TryFrom;
+use std::error::Error;
 use crate::cfg::{ParseError, Config, Homenet};
 use crate::cfg::PortRule;
 use crate::IPTABLES_REGEX;
+use thiserror::Error;
+
+#[derive(Error,Debug)]
+pub enum IpTablesError {
+
+    #[error("Iptables command failed")]
+    ProcessFailed(String)
+}
 
 pub struct IPTablesManager<'a> {
     pub(crate)ipt: iptables::IPTables,
@@ -79,14 +88,14 @@ impl IPTablesManager<'_> {
         }
     }
 
-    fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
+    fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
-        log::debug!("{}", &command);
-        self.ipt.append_unique("mangle", "PREROUTING", &command).unwrap();
+        self.ipt.append_unique("mangle", "PREROUTING", &command).map_err(|e| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
-    fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) {
-        self.ipt.delete("mangle", "PREROUTING", String::from(port_rule).as_str()).unwrap();
+    fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
+        let command = String::from(port_rule);
+        self.ipt.delete("mangle", "PREROUTING", &command.as_str()).map_err(|e| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
     pub(crate) fn list_rules(&self) -> HashSet<InternalIptablesPortRule> {
@@ -110,9 +119,11 @@ impl IPTablesManager<'_> {
         }
     }
 
-    pub(crate) fn sync(&self, diff: &IpTablesRuleDiff) {
-        diff.deleted.iter().for_each(|r| self.delete_iptables_rule(r));
-        diff.added.iter().for_each(|r| self.add_iptables_rule(r));
+    pub(crate) fn sync(&self, diff: &IpTablesRuleDiff) -> Result<(), IpTablesError> {
+        diff.deleted.iter()
+            .map(|r| self.delete_iptables_rule(r))
+            .collect::<Result<Vec<()>,_>>()
+            .and_then(|_| diff.added.iter().map(|r| self.add_iptables_rule(r)).collect::<Result<(), IpTablesError>>())
     }
 
     pub(crate) fn print_summary(&self) {
@@ -128,5 +139,7 @@ impl IPTablesManager<'_> {
         log::info!("TCP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
         log::info!("UDP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
     }
+
+
 
 }
