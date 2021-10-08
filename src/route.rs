@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 use std::collections::{HashSet};
-use crate::print_output;
+use crate::{print_output, ProcOutput};
 use std::process::Command;
 use std::fs::{OpenOptions, File};
 use crate::cfg::{Config, ParseError, Sink, IPRule, Nic};
@@ -8,10 +8,19 @@ use std::io::Read;
 use std::io::Write;
 use crate::ROUTE_DEV_REGEX;
 use crate::ROUTE_GATEWAY_REGEX;
+use crate::thiserror::Error;
 
-#[derive(Debug,PartialEq)]
+
+#[derive(Error,Debug)]
 pub enum IpRouteError {
-    Error(String)
+    #[error("Gateway not found")]
+    GatewayNotFound(String),
+    #[error("Underlying IP command failed")]
+    CommandFailed(String),
+    #[error(transparent)]
+    CommandError(#[from] std::io::Error),
+    #[error(transparent)]
+    ProcessFailed(#[from] crate::ProcessError)
 }
 
 pub struct IpRoute2<'a> {
@@ -71,33 +80,36 @@ impl From<&InternalIpRule> for String {
 
 impl IpRoute2<'_> {
 
-    pub(crate) fn setup_nics(&self) {
-        self.config.nics.iter().for_each(|nic| {
-            if self.is_nic_up(nic) == false || self.nic_has_ip(nic) == false {
+    pub(crate) fn setup_nics(&self) -> Vec<IpRouteError> {
+        self.config.nics.iter().map(|nic| {
+            if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip(nic)? == false {
                 log::info!("Will configure NIC {}", nic.nic);
-                let out = self.get_cmd().args(&["link", "set", &nic.nic, "up"]).output().unwrap();
-                let o = out.stderr;
-                print_output(o);
-                let out = self.get_cmd().args(&["addr", "flush", &nic.nic]).output().unwrap();
-                let o = out.stderr;
-                print_output(o);
-                let out = self.get_cmd().args(&["addr", "add", &nic.ip, "dev", &nic.nic]).output().unwrap();
-                let o = out.stderr;
-                print_output(o);
+                self.get_cmd().args(&["link", "set", &nic.nic, "up"]).output()?.pexit_ok()?;
+                self.get_cmd().args(&["addr", "flush", &nic.nic]).output()?.pexit_ok()?;
+                self.get_cmd().args(&["addr", "add", &nic.ip, "dev", &nic.nic]).output()?.pexit_ok()?;
+                Ok(())
             } else {
                 log::info!("NIC already configured: {}", nic.nic);
+                Ok(())
             }
-        });
+        })
+            .filter_map(|r| r.err())
+            .collect()
     }
 
-    fn is_nic_up(&self, nic: &Nic) -> bool {
-        let out = String::from_utf8(self.get_cmd().args(&["link", "show", &nic.nic]).output().unwrap().stdout).unwrap();
-        out.contains("state UP") == true
+    fn is_nic_up(&self, nic: &Nic) -> Result<bool, IpRouteError> {
+        let out = self.get_cmd().args(&["link", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        Ok(out.0.contains("state UP") == true)
     }
 
-    fn nic_has_ip(&self, nic: &Nic) -> bool {
-        let out = String::from_utf8(self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output().unwrap().stdout).unwrap();
-        out.contains(&nic.ip)
+    fn nic_has_ip(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
+        let out = self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        Ok(out.0.contains("state UP") == true)
+    }
+
+    fn nic_has_same_ip(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
+        let out = self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        Ok(out.0.contains(&nic.ip) == true)
     }
 
     fn rule_active(&self) -> bool {
@@ -218,41 +230,68 @@ impl IpRoute2<'_> {
         }
     }
 
-    pub(crate) fn add_route(&self, rule: &InternalIpRule) {
+    pub(crate) fn add_route(&self, rule: &InternalIpRule) -> Result<(), IpRouteError> {
         let mut cmd = self.get_cmd();
-        let e = (&mut cmd).arg("route").arg("add").args(String::from(rule).split(" "));
-        log::debug!("{:#?}",e);
-        let o = e.output().unwrap().stderr;
-        print_output(o);
+        let command = (&mut cmd).arg("route").arg("add").args(String::from(rule).split(" "));
+        command.output()?.pexit_ok()?;
+        Ok(())
     }
 
-    pub(crate) fn delete_route(&self, rule: &InternalIpRule) {
+    pub(crate) fn delete_route(&self, rule: &InternalIpRule) -> Result<(), IpRouteError> {
         let mut cmd = self.get_cmd();
-        let e = (&mut cmd).arg("route").arg("delete").args(String::from(rule).split(" "));
-        log::debug!("{:#?}",e);
-        let o = e.output().unwrap().stderr;
-        print_output(o);
+        let command = (&mut cmd).arg("route").arg("delete").args(String::from(rule).split(" "));
+        command.output()?.pexit_ok()?;
+        Ok(())
     }
 
     #[allow(unused)]
     pub(crate) fn check_gateway(&self, nic: &str, gateway: &str) -> Result<(), IpRouteError> {
-        let output =  self.get_cmd().arg("route").arg("add").arg("default").arg("via").arg(gateway).arg("dev").arg(nic).output().unwrap();
-
-        let message =  String::from_utf8(output.stderr).unwrap();
-
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(IpRouteError::Error(message))
-        }
+        let mut cmd = self.get_cmd();
+        let command =  cmd.arg("route").arg("add").arg("default").arg("via").arg(gateway).arg("dev").arg(nic);
+        command.output()?.pexit_ok()?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
+
     use crate::cfg::{Config, IPRule};
     use serde_yaml::from_reader;
-    use crate::route::IpRoute2;
+    use crate::route::{InternalIpRule, IpRoute2};
+    use anyhow::{Context, Result};
+
+    #[test]
+    fn route_test() {
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+        let iproute2 = IpRoute2{ config: &config };
+
+        let internal_route = InternalIpRule {
+            nic: "u".to_string(),
+            ip: "u".to_string(),
+            gateway: None,
+            table: None
+        };
+
+        iproute2.delete_route(&internal_route).unwrap();
+    }
+
+    #[test]
+    fn ip_add_error_test() {
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+        let iproute2 = IpRoute2{ config: &config };
+
+        let internal_route = InternalIpRule {
+            nic: "u".to_string(),
+            ip: "u".to_string(),
+            gateway: None,
+            table: None
+        };
+
+        iproute2.add_route(&internal_route).unwrap();
+    }
 
     #[test]
     fn udp_priority_lte() {
@@ -295,4 +334,6 @@ mod test {
         let sink_name = &active_sink_map.iter().filter(|s| s.name.eq(&active_sink)).nth(0).unwrap().name;
         assert_eq!("adsl", sink_name);
     }
+
+
 }

@@ -1,17 +1,17 @@
 ---
 homenet:
-  ip: 192.168.178.0/24
+  ip: 162.168.178.0/24
   input_nic: eth0
 nics:
   - nic: eth0
-    ip: 192.168.178.46/24
+    ip: 162.168.178.46/24
 sinks:
   - name: 5g
-    ip: 192.168.178.48
+    ip: 162.168.178.48
     nic: eth0
     udp: false
   - name: adsl
-    ip: 192.168.178.1
+    ip: 162.168.178.1
     nic: eth0
     udp: true
 priority_ports:
