@@ -58,7 +58,7 @@ impl ToCmd for Command {
     fn args_with_log(mut self, args: &str) -> Command {
         let vec = args.split(" ");
         self.args(vec);
-        log::error!("{}", format!("cmd: {:?}", &self).replace("\"",""));
+        log::debug!("{}", format!("cmd: {:?}", &self).replace("\"",""));
         self
     }
 }
