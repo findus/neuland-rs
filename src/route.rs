@@ -8,7 +8,7 @@ use std::io::Write;
 use crate::ROUTE_DEV_REGEX;
 use crate::ROUTE_GATEWAY_REGEX;
 use crate::thiserror::Error;
-use crate::util::ProcOutput;
+use crate::util::{ProcOutput, ToCmd};
 use crate::util::ProcessError;
 
 #[derive(Error,Debug)]
@@ -80,9 +80,9 @@ impl IpRoute2<'_> {
         self.config.nics.iter().map(|nic| {
             if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip_as_config(nic)? == false {
                 log::info!("Will configure NIC {}", nic.nic);
-                self.get_cmd().args(&["link", "set", &nic.nic, "up"]).output()?.pexit_ok()?;
-                self.get_cmd().args(&["addr", "flush", &nic.nic]).output()?.pexit_ok()?;
-                self.get_cmd().args(&["addr", "add", &nic.ip, "dev", &nic.nic]).output()?.pexit_ok()?;
+                self.get_cmd().args_with_log(&format!("link set {} up", &nic.nic)).output()?.pexit_ok()?;
+                self.get_cmd().args_with_log(&format!("addr flush {}", &nic.nic)).output()?.pexit_ok()?;
+                self.get_cmd().args_with_log(&format!("addr add {} dev {}", &nic.ip, &nic.nic)).output()?.pexit_ok()?;
                 Ok(())
             } else {
                 log::info!("NIC already configured: {}", nic.nic);
@@ -92,22 +92,22 @@ impl IpRoute2<'_> {
     }
 
     fn is_nic_up(&self, nic: &Nic) -> Result<bool, IpRouteError> {
-        let out = self.get_cmd().args(&["link", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        let out = self.get_cmd().args_with_log(&format!("link show {}", &nic.nic)).output()?.pexit_ok()?.get_output_as_string();
         Ok(out.0.contains("state UP") == true)
     }
 
     fn nic_has_ip(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
-        let out = self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        let out = self.get_cmd().args_with_log(&format!("-f inet addr show {}", &nic.nic)).output()?.pexit_ok()?.get_output_as_string();
         Ok(out.0.contains("state UP") == true)
     }
 
     fn nic_has_same_ip_as_config(&self, nic: &Nic) -> Result<bool, IpRouteError>  {
-        let out = self.get_cmd().args(&["-f", "inet", "addr", "show", &nic.nic]).output()?.pexit_ok()?.get_output_as_string();
+        let out = self.get_cmd().args_with_log(&format!("-f inet addr show {}", &nic.nic)).output()?.pexit_ok()?.get_output_as_string();
         Ok(out.0.contains(&nic.ip) == true)
     }
 
     fn rule_active(&self) -> bool {
-        let out = String::from_utf8(self.get_cmd().args(&["rule"]).output().unwrap().stdout).unwrap();
+        let out = String::from_utf8(self.get_cmd().args_with_log(&"rule").output().unwrap().stdout).unwrap();
         out.contains("udp_routing_table")
     }
 
@@ -115,7 +115,7 @@ impl IpRoute2<'_> {
         self.config.sinks
             .iter()
             .filter( |sink| {
-                let out = self.get_cmd().args(&["link", "show", &sink.nic]).output();
+                let out = self.get_cmd().args_with_log(&format!("link show {}", &sink.nic)).output();
                 out.is_ok() && out.unwrap().get_output_as_string().0.contains("state")
             })
             .collect()
@@ -132,7 +132,7 @@ impl IpRoute2<'_> {
 
         if self.rule_active() == false {
             log::info!("Adding fwmark rule to routing table");
-            self.get_cmd().args(&["rule", "add", "fwmark", "1", "table", "udp_routing_table"]).output()?.pexit_ok()?;
+            self.get_cmd().args_with_log(&"rule add fwmark 1 table udp_routing_table").output()?.pexit_ok()?;
         }
 
         Ok(())
@@ -172,8 +172,8 @@ impl IpRoute2<'_> {
     }
 
     pub(crate) fn list_routes(&self) -> Result<HashSet<InternalIpRule>, IpRouteError> {
-        let  stdout = self.get_cmd().arg("route").output()?.pexit_ok()?.get_output_as_string().0;
-        let  stdout_udp = self.get_cmd().args(&["route","show", "table", "udp_routing_table"]).output()?.pexit_ok()?.get_output_as_string().0;
+        let  stdout = self.get_cmd().args_with_log("route").output()?.pexit_ok()?.get_output_as_string().0;
+        let  stdout_udp = self.get_cmd().args_with_log(&"route show table udp_routing_table").output()?.pexit_ok()?.get_output_as_string().0;
 
         if stdout.len() == 0 {
             return Ok(HashSet::new());
@@ -224,15 +224,13 @@ impl IpRoute2<'_> {
     }
 
     pub(crate) fn add_route(&self, rule: &InternalIpRule) -> Result<(), IpRouteError> {
-        let mut cmd = self.get_cmd();
-        let command = (&mut cmd).arg("route").arg("add").args(String::from(rule).split(" "));
+        let mut command = self.get_cmd().args_with_log(&format!("route add {}", String::from(rule)));
         command.output()?.pexit_ok()?;
         Ok(())
     }
 
     pub(crate) fn delete_route(&self, rule: &InternalIpRule) -> Result<(), IpRouteError> {
-        let mut cmd = self.get_cmd();
-        let command = (&mut cmd).arg("route").arg("delete").args(String::from(rule).split(" "));
+        let mut command = self.get_cmd().args_with_log(&format!("route delete {}", String::from(rule)));
         command.output()?.pexit_ok()?;
         Ok(())
     }
@@ -240,7 +238,7 @@ impl IpRoute2<'_> {
     #[allow(unused)]
     pub(crate) fn check_gateway(&self, nic: &str, gateway: &str) -> Result<(), IpRouteError> {
         let mut cmd = self.get_cmd();
-        let command =  cmd.arg("route").arg("add").arg("default").arg("via").arg(gateway).arg("dev").arg(nic);
+        let mut command =  cmd.args_with_log(&format!("route add default via {} dev {}", gateway, nic));
         command.output()?.pexit_ok()?;
         Ok(())
     }
@@ -299,7 +297,7 @@ mod test {
             table: Some("udp_routing_table".to_string())
         };
 
-        let active_sink_map = iproute2.get_active_sinks()?;
+        let active_sink_map = iproute2.get_active_sinks();
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
 
@@ -320,7 +318,7 @@ mod test {
             table: Some("udp_routing_table".to_string())
         };
 
-        let active_sink_map = iproute2.get_active_sinks()?;
+        let active_sink_map = iproute2.get_active_sinks();
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
 
