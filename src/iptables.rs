@@ -137,6 +137,7 @@ impl IPTablesManager<'_> {
         log::info!(" ");
         log::info!("TCP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("tcp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
         log::info!("UDP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
+
     }
 
 

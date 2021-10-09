@@ -34,16 +34,18 @@ lazy_static! {
 fn run() -> Result<()> {
     env_logger::init();
     let whoami = Command::new("whoami").output()?.pexit_ok()?.get_output_as_string().0;
-    println!("{}", whoami);
+    log::info!("I am: {}", whoami);
 
     let config_file =  std::fs::File::open("rule_file.yaml")?;
     let config: Config = from_reader(config_file)?;
+
     let iproute2 = IpRoute2 { config: &config };
+    let iptables = IPTablesManager::new(&config);
 
     let _ = iproute2.setup_nics().context("Could not setup nics")?;
 
     let internal_rules = iproute2.calc_internal_rules_from_config();
-    let active_rules = &iproute2.list_routes()?;
+    let active_rules = iproute2.list_routes()?;
     let diff = iproute2.get_route_diff(&internal_rules, &active_rules);
 
     log::info!("Will add {} and delete {} IP Rules .. {} are the same.", diff.added.len().to_string().green(), diff.deleted.len().to_string().red(), diff.same.len().to_string().white());
@@ -53,14 +55,15 @@ fn run() -> Result<()> {
     let _: Vec<()> = diff.deleted.into_iter().map(|c| { iproute2.delete_route(c) }).collect::<Result<Vec<_>,_>>().context("ip delete command failed")?;
     let _: Vec<()> = diff.added.into_iter().map(|c| { iproute2.add_route(c) }).collect::<Result<Vec<_>,_>>().context("ip add command failed")?;
 
-    let manager = IPTablesManager::new(&config);
+    let existing_rules: HashSet<InternalIptablesPortRule> = iptables.list_rules();
+    let rules_from_config: HashSet<InternalIptablesPortRule> = iptables.config.priority_ports.iter().map(|p| (p, &iptables.config.homenet).into()).collect();
+    let overview = iptables.get_rule_diff(&existing_rules, &rules_from_config);
 
-    let existing_rules: HashSet<InternalIptablesPortRule> = manager.list_rules();
-    let rules_from_config: HashSet<InternalIptablesPortRule> = manager.config.priority_ports.iter().map(|p| (p, &manager.config.homenet).into()).collect();
-    let overview = manager.get_rule_diff(&existing_rules, &rules_from_config);
     log::info!("Will add {} and delete {} IPtables Rules .. {} are the same.", overview.added.len().to_string().green(), overview.deleted.len().to_string().red(), overview.same.len().to_string().white());
-    manager.sync(&overview)?;
-    manager.print_summary();
+
+    iptables.sync(&overview)?;
+    iptables.print_summary();
+    iproute2.print_summary()?;
     Ok(())
 }
 

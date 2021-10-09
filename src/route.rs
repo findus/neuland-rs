@@ -235,6 +235,18 @@ impl IpRoute2<'_> {
         Ok(())
     }
 
+    pub(crate) fn print_summary(&self) -> Result<(),IpRouteError> {
+        let  stdout = self.get_cmd().args_with_log("route").output()?.pexit_ok()?.get_output_as_string().0;
+        let  stdout_udp = self.get_cmd().args_with_log(&"route show table udp_routing_table").output()?.pexit_ok()?.get_output_as_string().0;
+
+        log::info!("Routing table:");
+        stdout.split("\n").for_each(|e| log::info!("{}", e));
+        log::info!(" ");
+        log::info!("UDP Routing table:");
+        stdout_udp.split("\n").for_each(|e| log::info!("{}", e));
+        Ok(())
+    }
+
     #[allow(unused)]
     pub(crate) fn check_gateway(&self, nic: &str, gateway: &str) -> Result<(), IpRouteError> {
         let mut cmd = self.get_cmd();
