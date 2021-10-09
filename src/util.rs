@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::num::ParseIntError;
 use std::process::{Command, ExitStatus, Output};
 use crate::cfg::ParseError;

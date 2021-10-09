@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::convert::TryFrom;
-use std::error::Error;
 use crate::cfg::{ParseError, Config, Homenet};
 use crate::cfg::PortRule;
 use crate::IPTABLES_REGEX;
@@ -90,12 +89,12 @@ impl IPTablesManager<'_> {
 
     fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
-        self.ipt.append_unique("mangle", "PREROUTING", &command).map_err(|e| IpTablesError::ProcessFailed("append command failed".to_string()))
+        self.ipt.append_unique("mangle", "PREROUTING", &command).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
     fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
-        self.ipt.delete("mangle", "PREROUTING", &command.as_str()).map_err(|e| IpTablesError::ProcessFailed("append command failed".to_string()))
+        self.ipt.delete("mangle", "PREROUTING", &command.as_str()).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
     pub(crate) fn list_rules(&self) -> HashSet<InternalIptablesPortRule> {

@@ -14,15 +14,14 @@ extern crate anyhow;
 extern crate thiserror;
 
 use std::collections::{HashSet};
-use std::num::ParseIntError;
 use serde_yaml::from_reader;
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command};
 use regex::Regex;
 use lazy_static::lazy_static;
 use colored::Colorize;
 use crate::iptables::*;
 use crate::route::*;
-use crate::cfg::{ParseError, Config};
+use crate::cfg::{Config};
 use crate::anyhow::{Context,Result};
 use crate::util::ProcOutput;
 
