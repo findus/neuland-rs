@@ -25,6 +25,7 @@ use crate::route::*;
 use crate::cfg::{Config};
 use crate::anyhow::{Context,Result};
 use crate::util::ProcOutput;
+use crate::itertools::Itertools;
 
 lazy_static! {
     static ref IPTABLES_REGEX: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
@@ -45,7 +46,9 @@ fn run() -> Result<()> {
 
     let _ = iproute2.setup_nics().context("Could not setup nics")?;
 
-    let internal_rules = iproute2.calc_internal_rules_from_config();
+    log::info!("Active Sinks: {}", iproute2.get_active_sinks().into_iter().map(|s| s.name.as_str()).join(","));
+
+    let internal_rules = iproute2.calc_internal_rules_from_config().context("Could not compute internal rules")?;
     let active_rules = iproute2.list_routes()?;
     let diff = iproute2.get_route_diff(&internal_rules, &active_rules);
 
@@ -66,7 +69,11 @@ fn run() -> Result<()> {
 
     let rules = iptables.list_rules();
     let duped_rules: Vec<_> = iptables.get_dupes(&rules);
-    log::warn!("Found {} duplicated iptables rules, gonna delete them", duped_rules.len().to_string().yellow());
+
+    if duped_rules.len() > 0 {
+        log::warn!("Found {} duplicated iptables rules, gonna delete them", duped_rules.len().to_string().yellow());
+    }
+
     let _: Vec<()> = duped_rules.into_iter().map(|rule| iptables.delete_iptables_rule(rule)).collect::<Result<Vec<_>,_>>().context("could not delete iptables rule")?;
 
     iptables.print_summary();

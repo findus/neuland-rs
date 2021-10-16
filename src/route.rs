@@ -13,6 +13,8 @@ use crate::util::ProcessError;
 
 #[derive(Error,Debug)]
 pub enum IpRouteError {
+    #[error("No routes available from config")]
+    NoRoutesAvailable,
     #[error(transparent)]
     CommandError(#[from] std::io::Error),
     #[error(transparent)]
@@ -111,7 +113,7 @@ impl IpRoute2<'_> {
         out.contains("udp_routing_table")
     }
 
-    fn get_active_sinks(&self) -> Vec<&Sink> {
+    pub fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
             .iter()
             .filter( |sink| {
@@ -143,32 +145,47 @@ impl IpRoute2<'_> {
         Command::new("ip")
     }
 
-    pub(crate) fn calc_internal_rules_from_config(&self) -> HashSet<InternalIpRule> {
+    pub(crate) fn calc_internal_rules_from_config(&self) -> Result<HashSet<InternalIpRule>,IpRouteError> {
 
         let sinks = self.get_active_sinks();
-        self.config.priority_ip.iter().map(|rule| {
+        let set = self.config.priority_ip.iter().map(|rule| {
+            let sink = self.get_first_avaliable_sink(&sinks, rule);
 
-            let first_available_sink = self.get_first_avaliable_sink(&sinks, rule);
-            let sink = sinks.iter().filter(|s| s.name.eq(&first_available_sink)).nth(0).unwrap();
-            log::info!("Sink for {}: {}", rule.name, sink.name);
-            rule.ips.iter().map(|r| {
-                InternalIpRule {
-                    nic: (&sink.nic).to_string(),
-                    ip: (r).to_string(),
-                    gateway: Some((&sink.ip).to_string()),
-                    table: rule.table.clone()
-                }
-            }).collect::<HashSet<_>>()
-        }).flatten().collect()
+            if sink.is_none() {
+                log::warn!("Could not find a sink for rule '{}'", &rule.name );
+            }
+
+            sink.map(|sinkname| sinks.iter().filter(|s| s.name.eq(&sinkname)).nth(0))
+                .flatten()
+                .map(|sink| {
+                    log::info!("Sink for {}: {}", rule.name, sink.name);
+                    rule.ips.iter().map(|r| {
+                        InternalIpRule {
+                            nic: (&sink.nic).to_string(),
+                            ip: (r).to_string(),
+                            gateway: Some((&sink.ip).to_string()),
+                            table: rule.table.clone(),
+                        }
+                    }).collect::<HashSet<_>>()
+                })
+        })
+            .flatten()
+            .flatten()
+            .collect::<HashSet<_>>();
+
+        if set.is_empty() {
+            Err(IpRouteError::NoRoutesAvailable)
+        } else {
+            Ok(set)
+        }
     }
 
-    fn get_first_avaliable_sink(&self, sinks: &Vec<&Sink>, rule: &IPRule) -> String {
-        let first_available_sink = if rule.name.eq("udp") == false {
-            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name))).nth(0).unwrap().name.to_string()
+    fn get_first_avaliable_sink(&self, sinks: &Vec<&Sink>, rule: &IPRule) -> Option<String> {
+        if rule.name.eq("udp") == false {
+            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name))).nth(0).map(|entry| entry.name.clone())
         } else {
-            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name) && e.udp)).nth(0).unwrap().name.to_string()
-        };
-        first_available_sink.to_string()
+            rule.priority.iter().filter_map(|name| sinks.iter().find(|e| e.name.eq(name) && e.udp)).nth(0).map(|entry| entry.name.clone())
+        }
     }
 
     pub(crate) fn list_routes(&self) -> Result<HashSet<InternalIpRule>, IpRouteError> {
@@ -276,7 +293,8 @@ mod test {
             table: None
         };
 
-        iproute2.delete_route(&internal_route).unwrap();
+        let result = iproute2.delete_route(&internal_route);
+        assert!(matches!(result, Err(_)))
     }
 
     #[test]
@@ -292,7 +310,8 @@ mod test {
             table: None
         };
 
-        iproute2.add_route(&internal_route).unwrap();
+        let result = iproute2.add_route(&internal_route);
+        assert!(matches!(result, Err(_)))
     }
 
     #[test]
@@ -311,9 +330,9 @@ mod test {
         let active_sink_map = iproute2.get_active_sinks();
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
+        assert!(active_sink.is_some());
+        assert_eq!(active_sink.unwrap().as_str(),"lte")
 
-        let sink_name = &active_sink_map.iter().filter(|s| s.name.eq(&active_sink)).nth(0).unwrap().name;
-        assert_eq!("lte", sink_name);
     }
 
     #[test]
@@ -332,9 +351,9 @@ mod test {
         let active_sink_map = iproute2.get_active_sinks();
 
         let active_sink = iproute2.get_first_avaliable_sink(&active_sink_map, &rule);
+        assert!(active_sink.is_some());
+        assert_eq!(active_sink.unwrap().as_str(),"adsl")
 
-        let sink_name = &active_sink_map.iter().filter(|s| s.name.eq(&active_sink)).nth(0).unwrap().name;
-        assert_eq!("adsl", sink_name);
     }
 
 
