@@ -12,6 +12,7 @@ extern crate env_logger;
 extern crate colored;
 extern crate anyhow;
 extern crate thiserror;
+extern crate itertools;
 
 use std::collections::{HashSet};
 use serde_yaml::from_reader;
@@ -62,6 +63,12 @@ fn run() -> Result<()> {
     log::info!("Will add {} and delete {} IPtables Rules .. {} are the same.", overview.added.len().to_string().green(), overview.deleted.len().to_string().red(), overview.same.len().to_string().white());
 
     iptables.sync(&overview)?;
+
+    let rules = iptables.list_rules();
+    let duped_rules: Vec<_> = iptables.get_dupes(&rules);
+    log::warn!("Found {} duplicated iptables rules, gonna delete them", duped_rules.len().to_string().yellow());
+    let _: Vec<()> = duped_rules.into_iter().map(|rule| iptables.delete_iptables_rule(rule)).collect::<Result<Vec<_>,_>>().context("could not delete iptables rule")?;
+
     iptables.print_summary();
     iproute2.print_summary()?;
     Ok(())

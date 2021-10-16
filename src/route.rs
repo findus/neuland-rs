@@ -262,7 +262,6 @@ mod test {
     use crate::cfg::{Config, IPRule};
     use serde_yaml::from_reader;
     use crate::route::{InternalIpRule, IpRoute2};
-    use anyhow::{Context, Result};
 
     #[test]
     fn route_test() {

@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::convert::TryFrom;
 use crate::cfg::{ParseError, Config, Homenet};
 use crate::cfg::PortRule;
 use crate::IPTABLES_REGEX;
 use thiserror::Error;
+use itertools::Itertools;
+use std::iter::FromIterator;
 
 #[derive(Error,Debug)]
 pub enum IpTablesError {
@@ -23,7 +25,7 @@ pub struct IpTablesRuleDiff<'a> {
     pub(crate) same: Vec<&'a InternalIptablesPortRule>
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct InternalIptablesPortRule {
     pub(crate) nic: String,
     pub(crate) source: String,
@@ -92,22 +94,41 @@ impl IPTablesManager<'_> {
         self.ipt.append_unique("mangle", "PREROUTING", &command).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
-    fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
+    pub fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
         self.ipt.delete("mangle", "PREROUTING", &command.as_str()).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
-    pub(crate) fn list_rules(&self) -> HashSet<InternalIptablesPortRule> {
+    /**
+    Returns a sorted list of all present rules
+    Contains duplicates if return type is a set
+    **/
+    pub(crate) fn list_rules<T>(&self) -> T where T: FromIterator<InternalIptablesPortRule> {
         self.ipt.list_table("mangle").unwrap()
             .into_iter()
             .map(|rule| InternalIptablesPortRule::try_from(rule))
             .filter(|e| e.is_ok())
             .map(|e| e.unwrap())
+            .sorted()
             .collect()
     }
 
+    pub(crate) fn get_dupes<'a>(&self, existing_rules: &'a Vec<InternalIptablesPortRule>) -> Vec<&'a InternalIptablesPortRule> {
+        //find rules that might be duplicated for some reason
+        let mut map: HashMap<&InternalIptablesPortRule, u32> = HashMap::new();
+        existing_rules.iter().for_each(|rule| {
+            let entry = map.entry(rule).or_insert(0);
+            *entry += 1;
+        });
+
+        map.into_iter()
+            .filter(|(_, v)| v > &1)
+            .flat_map(|(k, v)| (0..(v - 1)).map(|_|k ).collect::<Vec<_>>())
+            .collect::<Vec<&InternalIptablesPortRule>>()
+    }
+
     pub(crate) fn get_rule_diff<'a>(&self, existing_rules: &'a HashSet<InternalIptablesPortRule>, rules_from_config: &'a HashSet<InternalIptablesPortRule>) -> IpTablesRuleDiff<'a> {
-        let to_delete = existing_rules.difference(&rules_from_config).collect();
+        let to_delete = existing_rules.difference(rules_from_config).collect();
         let to_add = rules_from_config.difference(&existing_rules).collect();
         let same = rules_from_config.intersection(&existing_rules).collect();
 
@@ -126,7 +147,7 @@ impl IPTablesManager<'_> {
     }
 
     pub(crate) fn print_summary(&self) {
-        let rules = self.list_rules();
+        let rules: Vec<InternalIptablesPortRule> = self.list_rules();
         let ports: (Vec<InternalIptablesPortRule>,Vec<InternalIptablesPortRule>) = rules
             .into_iter()
             .filter(|e|e.ports.is_some())
@@ -139,7 +160,114 @@ impl IPTablesManager<'_> {
         log::info!("UDP ports that are NOT getting marked {}", ports.0.iter().filter(|e| e.protocol.eq("udp")).filter_map(|e| e.ports.as_ref().map(|p| format!("{} [{}]",p,e.mark))).collect::<Vec<_>>().join(", "));
 
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::iptables::{InternalIptablesPortRule, IPTablesManager};
+    use crate::cfg::Config;
+    use serde_yaml::from_reader;
+
+    #[test]
+    fn test_dupe_detection_1_dupe() {
+
+        let rule1 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.1".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let rule2 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.1".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let vec = vec![rule1,rule2];
+
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+
+        let manager = IPTablesManager::new(&config);
+        let rules = manager.get_dupes(&vec);
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_dupe_detection_0_dupe() {
+
+        let rule1 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.1".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let vec = vec![rule1];
+
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+
+        let manager = IPTablesManager::new(&config);
+        let rules = manager.get_dupes(&vec);
+        assert_eq!(rules.len(), 0);
+    }
+
+    #[test]
+    fn test_dupe_detection_2_different_dupes() {
+
+        let rule11 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.1".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let rule12 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.1".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let rule21 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.2".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
+
+        let rule22 = InternalIptablesPortRule {
+            nic: "eth0".to_string(),
+            source: "1.1.1.2".to_string(),
+            protocol: "udp".to_string(),
+            ports: Some("1,3".to_string()),
+            not: None,
+            mark: 1
+        };
 
 
+        let vec = vec![rule11,rule12,rule21,rule22];
 
+        let f =  std::fs::File::open("test_udp_rule_lte.yml").unwrap();
+        let config: Config = from_reader(f).unwrap();
+
+        let manager = IPTablesManager::new(&config);
+        let rules = manager.get_dupes(&vec);
+        assert_eq!(rules.len(), 2);
+    }
 }
