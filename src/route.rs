@@ -11,6 +11,7 @@ use crate::thiserror::Error;
 use crate::util::{ProcOutput, ToCmd};
 use crate::util::ProcessError;
 use itertools::Itertools;
+use std::path::Path;
 
 #[derive(Error,Debug)]
 pub enum IpRouteError {
@@ -80,7 +81,9 @@ impl From<&InternalIpRule> for String {
 impl IpRoute2<'_> {
 
     pub(crate) fn setup_nics(&self) -> Result<Vec<()>, IpRouteError> {
-        self.config.nics.iter().map(|nic| {
+        self.config.nics.iter()
+            .filter(|nic| self.is_present(nic))
+            .map(|nic| {
             if self.is_nic_up(nic)? == false || self.nic_has_ip(nic)? == false || self.nic_has_same_ip_as_config(nic)? == false {
                 log::info!("Will configure NIC {}", nic.nic);
                 self.get_cmd().args_with_log(&format!("link set {} up", &nic.nic)).output()?.pexit_ok()?;
@@ -92,6 +95,11 @@ impl IpRoute2<'_> {
                 Ok(())
             }
         }).collect()
+    }
+
+    fn is_present(&self, nic: &Nic) -> bool {
+        let path = format!("/sys/class/net/{}", nic.nic);
+        Path::new(&path).exists()
     }
 
     fn is_nic_up(&self, nic: &Nic) -> Result<bool, IpRouteError> {
