@@ -10,6 +10,7 @@ use crate::ROUTE_GATEWAY_REGEX;
 use crate::thiserror::Error;
 use crate::util::{ProcOutput, ToCmd};
 use crate::util::ProcessError;
+use itertools::Itertools;
 
 #[derive(Error,Debug)]
 pub enum IpRouteError {
@@ -204,7 +205,7 @@ impl IpRoute2<'_> {
             //dont delete nexthop
             .filter(|rule| rule.ip.eq(&self.config.homenet.ip) == false)
             //ignore rules that we dont care about like wireguard rules
-            .filter(|rule| rule.nic.eq(&self.config.homenet.input_nic))
+            .filter(|rule| *&self.config.nics.iter().map(|e| e.nic.clone()).contains::<String>(&rule.nic.to_string()))
             .collect();
 
         let udp_rules: HashSet<_> = stdout_udp
