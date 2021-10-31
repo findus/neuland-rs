@@ -26,6 +26,7 @@ use crate::cfg::{Config};
 use crate::anyhow::{Context,Result};
 use crate::util::ProcOutput;
 use crate::itertools::Itertools;
+use std::env;
 
 lazy_static! {
     static ref IPTABLES_REGEX: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
@@ -38,7 +39,20 @@ fn run() -> Result<()> {
     let whoami = Command::new("whoami").output()?.pexit_ok()?.get_output_as_string().0;
     log::info!("I am: {}", whoami);
 
-    let config_file =  std::fs::File::open("rule_file.yaml")?;
+    let arguments: Vec<String> = env::args().collect();
+    let path = if let Some(config) = arguments.iter().enumerate().filter(|(_, entry)| entry.as_str().eq("--config")).last() {
+        let path_index = config.0 + 1;
+        match arguments.get(path_index) {
+            Some(path) => path,
+            None => "rule_file.yaml"
+        }
+    } else {
+        "rule_file.yaml"
+    };
+
+    log::info!("Using: {}", path);
+
+    let config_file =  std::fs::File::open(path)?;
     let config: Config = from_reader(config_file)?;
 
     let iproute2 = IpRoute2 { config: &config };
