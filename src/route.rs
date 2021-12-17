@@ -125,6 +125,7 @@ impl IpRoute2<'_> {
     pub fn get_active_sinks(&self) -> Vec<&Sink> {
         self.config.sinks
             .iter()
+            .filter( |sink| sink.active.unwrap_or(true))
             .filter( |sink| {
                 let out = self.get_cmd().args_with_log(&format!("link show {}", &sink.nic)).output();
                 out.is_ok() && out.unwrap().get_output_as_string().0.contains("state")

@@ -13,6 +13,7 @@ pub struct Sink {
     pub(crate) ip: String,
     pub(crate) nic: String,
     pub(crate) udp: bool,
+    pub(crate) active: Option<bool>
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
