@@ -91,11 +91,13 @@ impl IPTablesManager<'_> {
 
     fn add_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
+        log::debug!("{}",command);
         self.ipt.append_unique("mangle", "PREROUTING", &command).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
     pub fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
+        log::debug!("{}",command);
         self.ipt.delete("mangle", "PREROUTING", &command.as_str()).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
     }
 
