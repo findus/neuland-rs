@@ -148,6 +148,11 @@ impl IpRoute2<'_> {
             self.get_cmd().args_with_log(&"rule add fwmark 1 table udp_routing_table").output()?.pexit_ok()?;
         }
 
+        if self.get_cmd().args_with_log(&"route show table udp_routing_table").output()?.pexit_ok().is_err() {
+            self.get_cmd().args_with_log(&"route add default dev eth0 table udp_routing_table").output()?.pexit_ok()?;
+            self.get_cmd().args_with_log(&"route delete default dev eth0 table udp_routing_table").output()?.pexit_ok()?;
+        }
+
         Ok(())
     }
 
