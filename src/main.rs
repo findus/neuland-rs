@@ -60,6 +60,8 @@ fn run() -> Result<()> {
 
     let _ = iproute2.setup_nics().context("Could not setup nics")?;
 
+    iproute2.setup_udp_routing_table()?;
+
     log::info!("Active Sinks: {}", iproute2.get_active_sinks().into_iter().map(|s| s.name.as_str()).join(","));
 
     let internal_rules = iproute2.calc_internal_rules_from_config().context("Could not compute internal rules")?;
@@ -67,8 +69,6 @@ fn run() -> Result<()> {
     let diff = iproute2.get_route_diff(&internal_rules, &active_rules);
 
     log::info!("Will add {} and delete {} IP Rules .. {} are the same.", diff.added.len().to_string().green(), diff.deleted.len().to_string().red(), diff.same.len().to_string().white());
-
-    iproute2.setup_udp_routing_table()?;
 
     let _: Vec<()> = diff.deleted.into_iter().map(|c| { iproute2.delete_route(c) }).collect::<Result<Vec<_>,_>>().context("ip delete command failed")?;
     let _: Vec<()> = diff.added.into_iter().map(|c| { iproute2.add_route(c) }).collect::<Result<Vec<_>,_>>().context("ip add command failed")?;
