@@ -134,6 +134,7 @@ impl IpRoute2<'_> {
     }
 
     pub(crate) fn setup_udp_routing_table(&self) -> Result<(), IpRouteError> {
+        log::info!("Check UDP Routing table state...");
         let mut file = String::new();
         File::open("/etc/iproute2/rt_tables")?.read_to_string(&mut file)?;
         if file.contains("udp_routing_table") == false {
