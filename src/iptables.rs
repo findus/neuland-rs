@@ -73,12 +73,12 @@ impl TryFrom<String> for InternalIptablesPortRule {
     fn try_from(value: String) -> Result<Self, ParseError> {
         let capture = IPTABLES_REGEX.captures(&value).ok_or(ParseError::Error("capture not found".to_string()))?;
         let rule = InternalIptablesPortRule {
-            nic: capture.get(3).map(|e| e.as_str()).ok_or(ParseError::Error("nic not found".to_string()))?.to_string(),
-            protocol: capture.get(4).map(|e| e.as_str()).ok_or(ParseError::Error("protocol not found".to_string()))?.to_string(),
+            nic: capture.get(4).map(|e| e.as_str()).unwrap_or("").to_string(),
+            protocol: capture.get(5).map(|e| e.as_str()).ok_or(ParseError::Error("protocol not found".to_string()))?.to_string(),
             source: capture.get(2).map(|e| e.as_str()).ok_or(ParseError::Error("source not found".to_string()))?.to_string(),
-            ports: capture.get(7).map(|e| e.as_str().to_string()),
-            not: capture.get(6).map(|e| e.as_str()).map( |f| f.to_string().contains("!")),
-            mark:  capture.get(9).or_else(|| capture.get(8)).map(|e| e.as_str().parse::<u8>()).ok_or(ParseError::Error("mark not found".to_string()))??,
+            ports: capture.get(8).map(|e| e.as_str().to_string()),
+            not: capture.get(7).map(|e| e.as_str()).map( |f| f.to_string().contains("!")),
+            mark:  capture.get(10).or_else(|| capture.get(9)).map(|e| e.as_str().parse::<u8>()).ok_or(ParseError::Error("mark not found".to_string()))??,
             chain: capture.get(1).map(|e| e.as_str().to_string()).ok_or(ParseError::Error("chain not found".to_string()))?
         };
         Ok(rule)
@@ -115,7 +115,7 @@ impl From<&InternalIptablesPortRule> for String {
 impl From<(&PortRule,&Homenet)> for InternalIptablesPortRule {
     fn from((rule,homenet): (&PortRule, &Homenet)) -> Self {
         InternalIptablesPortRule {
-            nic: homenet.input_nic.to_string(),
+            nic: if rule.chain.eq("OUTPUT") { "".to_string() } else {  homenet.input_nic.to_string() },
             mark: rule.mark.unwrap_or(1),
             not: rule.not,
             source: homenet.ip.to_string(),
@@ -144,7 +144,7 @@ impl IPTablesManager<'_> {
     pub fn delete_iptables_rule(&self, port_rule: &InternalIptablesPortRule) -> Result<(), IpTablesError> {
         let command = String::from(port_rule);
         log::debug!("-D {} {}",&port_rule.chain, command);
-        self.ipt.delete("mangle", &port_rule.chain, &command.as_str()).map_err(|_| IpTablesError::ProcessFailed("append command failed".to_string()))
+        self.ipt.delete("mangle", &port_rule.chain, &command.as_str()).map_err(|_| IpTablesError::ProcessFailed("delete command failed".to_string()))
     }
 
     /**
