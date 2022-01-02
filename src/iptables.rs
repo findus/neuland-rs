@@ -1,5 +1,6 @@
 use std::collections::{HashSet, HashMap};
 use std::convert::TryFrom;
+use std::hash::{Hash, Hasher};
 use crate::cfg::{ParseError, Config, Homenet};
 use crate::cfg::PortRule;
 use crate::IPTABLES_REGEX;
@@ -25,7 +26,7 @@ pub struct IpTablesRuleDiff<'a> {
     pub(crate) same: Vec<&'a InternalIptablesPortRule>
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Debug, Eq, Ord, PartialOrd)]
 pub struct InternalIptablesPortRule {
     pub(crate) nic: String,
     pub(crate) source: String,
@@ -33,6 +34,33 @@ pub struct InternalIptablesPortRule {
     pub(crate) ports: Option<String>,
     pub(crate) not: Option<bool>,
     pub(crate) mark: u8
+}
+
+impl PartialEq for InternalIptablesPortRule {
+    fn eq(&self, other: &Self) -> bool {
+            self.nic.eq(&other.nic)
+                &&
+                self.source.eq(&other.source)
+                &&
+                self.protocol.eq(&other.protocol)
+                &&
+                self.ports.eq(&other.ports)
+                &&
+                self.mark.eq(&other.mark)
+                &&
+                ((self.not == other.not) || (self.not == None && other.not == Some(false)) || (self.not == Some(false) && other.not == None))
+    }
+}
+
+impl Hash for InternalIptablesPortRule {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.not.unwrap_or(false).hash(state);
+        self.mark.hash(state);
+        self.ports.clone().unwrap_or("".to_string()).hash(state);
+        self.protocol.hash(state);
+        self.source.hash(state);
+        self.nic.hash(state);
+    }
 }
 
 impl TryFrom<String> for InternalIptablesPortRule {

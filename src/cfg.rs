@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde::Deserialize;
+use crate::InternalIptablesPortRule;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Homenet {
