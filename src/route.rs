@@ -143,14 +143,14 @@ impl IpRoute2<'_> {
             writeln!(file, "201 udp_routing_table")?
         }
 
-        if self.rule_active() == false {
-            log::info!("Adding fwmark rule to routing table");
-            self.get_cmd().args_with_log(&"rule add fwmark 1 table udp_routing_table").output()?.pexit_ok()?;
-        }
-
         if self.get_cmd().args_with_log(&"route show table udp_routing_table").output()?.pexit_ok().is_err() {
             self.get_cmd().args_with_log(&"route add default dev lo table udp_routing_table").output()?.pexit_ok()?;
             self.get_cmd().args_with_log(&"route delete default dev lo table udp_routing_table").output()?.pexit_ok()?;
+        }
+
+        if self.rule_active() == false {
+            log::info!("Adding fwmark rule to routing table");
+            self.get_cmd().args_with_log(&"rule add fwmark 1 table udp_routing_table").output()?.pexit_ok()?;
         }
 
         Ok(())

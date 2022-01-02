@@ -29,7 +29,7 @@ use crate::itertools::Itertools;
 use std::env;
 
 lazy_static! {
-    static ref IPTABLES_REGEX: Regex = Regex::new(r"-A PREROUTING -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
+    static ref IPTABLES_REGEX: Regex = Regex::new(r"-A (PREROUTING|OUTPUT) -s (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}) -i (.*?) -p (udp|tcp) (--?ma?t?c?h? multiport( ! | )--dports (.*) -j MARK --set-x?mark 0?x?(\d{1})|-j MARK --set-xmark 0?x?(\d{1}))").unwrap();
     static ref ROUTE_DEV_REGEX: Regex = Regex::new(r"dev ([^ \n]+)").unwrap();
     static ref ROUTE_GATEWAY_REGEX: Regex = Regex::new(r"via ([^ \n]+)").unwrap();
 }

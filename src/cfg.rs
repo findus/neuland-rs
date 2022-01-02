@@ -45,11 +45,17 @@ pub struct IPRule {
     pub(crate) table: Option<String>
 }
 
+fn PREROUTING() -> String {
+    "PREROUTING".to_string()
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct PortRule {
     pub(crate) not: Option<bool>,
     length: Option<String>,
     pub(crate) ports: Option<String>,
     pub(crate) protocol: String,
-    pub(crate) mark: Option<u8>
+    pub(crate) mark: Option<u8>,
+    #[serde(default = "PREROUTING")]
+    pub(crate) chain: String
 }
